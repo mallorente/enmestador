@@ -158,8 +158,8 @@ volumes/
 ### Ideas abiertas
 
 - Interfaz web mínima para revisar el dead letter (bookmarks que fallaron)
-- Exportación a formatos alternativos (Notion, Logseq)
-- Soporte para más fuentes (Reddit saved, Pocket, Instapaper)
+- Conexión con LLM Wiki
+- Conexión con NotebookLM
 
 ## Licencia
 
