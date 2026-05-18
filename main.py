@@ -32,7 +32,7 @@ from config import (
 from llm_processor import EnrichmentError, LLMProcessor
 from models import Bookmark, EnrichedBookmark, ExternalArticle, ExtractedContent, PipelineResult, ScrapeMode, Source
 from notifier import Notifier
-from playwright_extractor import extract_linkedin_post, extract_linkedin_urls, extract_with_playwright, extract_x_thread
+from playwright_extractor import extract_linkedin_post, extract_with_playwright, extract_x_thread
 from scraper_linkedin import ScraperLinkedIn
 from scraper_x import ScraperX
 from state import CursorsStore, DeadLetterWriter, LockFile, ProcessedUrlStore, normalize_url
@@ -245,11 +245,17 @@ async def _process_bookmark(
             external_urls=bookmark.external_urls,
         )
     else:
-        # LinkedIn: Playwright primary, trafilatura fallback
+        # LinkedIn: single Playwright visit extracts content + external URLs together
         extracted = None
+        li_urls: list[str] = list(bookmark.external_urls) if bookmark.external_urls else []
         if pw_context:
             logger.info("LinkedIn Playwright extraction for %s", bookmark.url)
-            extracted = await extract_linkedin_post(pw_context, str(bookmark.url), bookmark.post_text)
+            extracted, pw_urls = await extract_linkedin_post(
+                pw_context, str(bookmark.url), bookmark.post_text
+            )
+            if pw_urls and not li_urls:
+                li_urls = pw_urls
+                bookmark.external_urls = li_urls
 
         # Trafilatura fallback if Playwright failed or returned insufficient content
         if (
@@ -263,18 +269,6 @@ async def _process_bookmark(
             if traf_extracted and traf_extracted.full_text and not _is_cookie_noise(traf_extracted.full_text):
                 if extracted is None or len(traf_extracted.full_text) > len(extracted.full_text or ""):
                     extracted = traf_extracted
-
-        # LinkedIn: extract external URLs from the post via Playwright
-        # (the API scraper may have found some URLs in the response,
-        #  but Playwright can find more from the rendered page)
-        li_urls: list[str] = list(bookmark.external_urls) if bookmark.external_urls else []
-        if pw_context and not li_urls:
-            logger.info("LinkedIn: extracting external URLs from %s", bookmark.url)
-            pw_urls = await extract_linkedin_urls(pw_context, str(bookmark.url))
-            if pw_urls:
-                li_urls.extend(pw_urls)
-                if not bookmark.external_urls:
-                    bookmark.external_urls = li_urls
 
     # External articles: try trafilatura, then Playwright fallback
     ext_urls = bookmark.external_urls or (li_urls if bookmark.source == Source.LINKEDIN and li_urls else None)

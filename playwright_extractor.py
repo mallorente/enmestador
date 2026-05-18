@@ -114,20 +114,10 @@ async def extract_linkedin_post(
     context: BrowserContext,
     url: str,
     post_text: str | None = None,
-) -> ExtractedContent | None:
-    """Extract content from a LinkedIn post URL using an authenticated context.
+) -> tuple[ExtractedContent | None, list[str]]:
+    """Extract content and external URLs from a LinkedIn post in a single page visit.
 
-    LinkedIn posts need special handling due to auth walls and their DOM structure.
-    Uses the authenticated context to bypass login walls, then extracts the
-    post content from the rendered page.
-
-    Args:
-        context: Authenticated BrowserContext with LinkedIn cookies.
-        url: LinkedIn post URL.
-        post_text: Fallback text from the scraper.
-
-    Returns:
-        ExtractedContent on success, None on failure.
+    Returns (ExtractedContent | None, external_urls).
     """
     logger.info("Playwright LinkedIn extraction: %s", url)
     page: Page | None = None
@@ -140,10 +130,11 @@ async def extract_linkedin_post(
             await page.wait_for_timeout(5000)
 
         content = await _extract_linkedin_content(page, url, post_text)
-        return content
+        external_urls = await _extract_linkedin_external_urls(page)
+        return content, external_urls
     except Exception:
         logger.exception("Playwright LinkedIn extraction failed for %s", url)
-        return None
+        return None, []
     finally:
         if page and not page.is_closed():
             await page.close()
@@ -557,39 +548,12 @@ async def _dismiss_x_overlay(page: Page) -> None:
             pass
 
 
-async def extract_linkedin_urls(
-    context: BrowserContext,
-    url: str,
-) -> list[str]:
-    """Extract external URLs from a LinkedIn post page using Playwright.
-
-    Navigates to the LinkedIn post and collects all external (non-LinkedIn)
-    URLs from links in the post content.
-
-    Args:
-        context: Authenticated BrowserContext with LinkedIn cookies.
-        url: LinkedIn post URL.
-
-    Returns:
-        List of external URLs found in the post content.
-    """
-    logger.info("Playwright LinkedIn URL extraction: %s", url)
-    page: Page | None = None
+async def _extract_linkedin_external_urls(page: Page) -> list[str]:
+    """Extract external (non-LinkedIn) URLs from the already-loaded LinkedIn page."""
     try:
-        page = await context.new_page()
-        try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT)
-        except Exception:
-            logger.warning("LinkedIn URL extraction nav timeout for %s", url)
-            await page.wait_for_timeout(5000)
-
-        await page.wait_for_timeout(3000)
-        await _dismiss_linkedin_overlay(page)
-
         urls = await page.evaluate(
             """() => {
                 const links = new Set();
-                // Find the post content area and extract external links
                 const containers = [
                     '.update-components-text',
                     '.feed-shared-update-v2__description',
@@ -597,15 +561,11 @@ async def extract_linkedin_urls(
                     '[dir="ltr"]',
                     'article',
                 ];
-
                 for (const sel of containers) {
-                    const els = document.querySelectorAll(sel);
-                    els.forEach(el => {
-                        const anchors = el.querySelectorAll('a[href]');
-                        anchors.forEach(a => {
+                    document.querySelectorAll(sel).forEach(el => {
+                        el.querySelectorAll('a[href]').forEach(a => {
                             const href = a.href;
-                            if (href &&
-                                href.startsWith('http') &&
+                            if (href && href.startsWith('http') &&
                                 !href.includes('linkedin.com') &&
                                 !href.includes('/help/') &&
                                 !href.includes('/hashtag/')) {
@@ -614,34 +574,27 @@ async def extract_linkedin_urls(
                         });
                     });
                 }
-
-                // Also find links in the main content area as fallback
-                const main = document.querySelector('main') || document.querySelector('[role="main"]');
-                if (main && links.size === 0) {
-                    const anchors = main.querySelectorAll('a[href]');
-                    anchors.forEach(a => {
-                        const href = a.href;
-                        if (href &&
-                            href.startsWith('http') &&
-                            !href.includes('linkedin.com') &&
-                            !href.includes('/help/') &&
-                            !href.includes('/hashtag/')) {
-                            links.add(href);
-                        }
-                    });
+                if (links.size === 0) {
+                    const main = document.querySelector('main, [role="main"]');
+                    if (main) {
+                        main.querySelectorAll('a[href]').forEach(a => {
+                            const href = a.href;
+                            if (href && href.startsWith('http') &&
+                                !href.includes('linkedin.com') &&
+                                !href.includes('/help/') &&
+                                !href.includes('/hashtag/')) {
+                                links.add(href);
+                            }
+                        });
+                    }
                 }
-
                 return Array.from(links);
             }"""
         )
-
         return urls or []
     except Exception:
-        logger.exception("LinkedIn URL extraction failed for %s", url)
+        logger.warning("LinkedIn external URL extraction failed")
         return []
-    finally:
-        if page and not page.is_closed():
-            await page.close()
 
 
 def _clean_extracted_text(text: str) -> str:

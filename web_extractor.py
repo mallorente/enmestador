@@ -1,8 +1,7 @@
 """Web article extractor for the PKM ingestion pipeline.
 
 Fetches HTML from bookmark URLs and extracts clean article text using
-trafilatura. Returns ExtractedContent on success or None on failure.
-Includes retry with exponential backoff for transient failures.
+trafilatura. Retries with exponential backoff on transient failures.
 """
 
 import asyncio
@@ -18,39 +17,10 @@ from models import ExtractedContent
 logger = logging.getLogger(__name__)
 
 
-
-
-
-async def _fetch_with_retry(url: str, max_retries: int = FETCH_MAX_RETRIES) -> str | None:
-    """Fetch HTML with exponential-backoff retry on transient errors.
-
-    Retries on: TimeoutException, HTTP 5xx, RequestError.
-    Does NOT retry on: HTTP 4xx, TooManyRedirects.
-    """
-    for attempt in range(max_retries):
-        try:
-            return await _fetch_html(url)
-        except _RetryableError:
-            if attempt < max_retries - 1:
-                delay = FETCH_BACKOFF_BASE * (2 ** attempt)
-                logger.info("Retry %d/%d for %s in %.1fs", attempt + 1, max_retries, url, delay)
-                await asyncio.sleep(delay)
-                continue
-            logger.warning("All %d retries exhausted for %s", max_retries, url)
-            return None
-        except _NonRetryableError:
-            return None
-
-
 async def extract(url: str, post_text: str | None = None) -> ExtractedContent | None:
     """Fetch and extract clean article text from a URL.
 
-    Args:
-        url: The article URL to fetch and extract.
-        post_text: Original post text to include if trafilatura fails.
-
-    Returns:
-        ExtractedContent on success, None on failure (logged as WARNING).
+    Returns ExtractedContent on success, None on failure.
     """
     logger.info("Extracting article: %s", url)
 
@@ -59,29 +29,28 @@ async def extract(url: str, post_text: str | None = None) -> ExtractedContent | 
         logger.warning("Failed to fetch HTML for %s", url)
         return None
 
-    extracted = _run_trafilatura(url, html, post_text)
-    if extracted is None:
-        logger.warning("trafilatura returned empty content for %s", url)
-        return None
-
-    return extracted
+    return _run_trafilatura(url, html, post_text)
 
 
-class _RetryableError(Exception):
-    """Transient error worth retrying."""
+async def _fetch_with_retry(url: str) -> str | None:
+    """Fetch HTML with exponential-backoff retry on transient errors."""
+    for attempt in range(FETCH_MAX_RETRIES):
+        retryable, html = await _fetch_html(url)
+        if html is not None:
+            return html
+        if not retryable:
+            return None
+        if attempt < FETCH_MAX_RETRIES - 1:
+            delay = FETCH_BACKOFF_BASE * (2 ** attempt)
+            logger.info("Retry %d/%d for %s in %.1fs", attempt + 1, FETCH_MAX_RETRIES, url, delay)
+            await asyncio.sleep(delay)
+
+    logger.warning("All %d retries exhausted for %s", FETCH_MAX_RETRIES, url)
+    return None
 
 
-class _NonRetryableError(Exception):
-    """Permanent error — not worth retrying."""
-
-
-async def _fetch_html(url: str) -> str:
-    """Fetch raw HTML from a URL with timeout and redirect limits.
-
-    Returns the HTML string on success.
-    Raises _RetryableError on transient failures (timeout, 5xx, network).
-    Raises _NonRetryableError on permanent failures (4xx, too many redirects).
-    """
+async def _fetch_html(url: str) -> tuple[bool, str | None]:
+    """Fetch raw HTML. Returns (retryable, html_or_None)."""
     try:
         async with httpx.AsyncClient(
             timeout=FETCH_TIMEOUT,
@@ -90,25 +59,24 @@ async def _fetch_html(url: str) -> str:
         ) as client:
             response = await client.get(url)
             response.raise_for_status()
-            return response.text
+            return False, response.text
     except httpx.TooManyRedirects:
         logger.warning("Redirect chain exceeded %d for %s", MAX_REDIRECTS, url)
-        raise _NonRetryableError(f"Too many redirects for {url}") from None
+        return False, None
     except httpx.TimeoutException:
         logger.warning("Timeout fetching %s after %.1fs", url, FETCH_TIMEOUT)
-        raise _RetryableError(f"Timeout fetching {url}") from None
+        return True, None
     except httpx.HTTPStatusError as exc:
-        if exc.response.status_code >= 500:
-            logger.warning("Server error %s for %s (retryable)", exc.response.status_code, url)
-            raise _RetryableError(f"HTTP {exc.response.status_code} for {url}") from None
-        logger.warning("Client error %s for %s (non-retryable)", exc.response.status_code, url)
-        raise _NonRetryableError(f"HTTP {exc.response.status_code} for {url}") from None
+        retryable = exc.response.status_code >= 500
+        logger.warning("HTTP %d for %s (%s)", exc.response.status_code, url,
+                       "retryable" if retryable else "non-retryable")
+        return retryable, None
     except httpx.RequestError as exc:
         logger.warning("Request error for %s: %s", url, exc)
-        raise _RetryableError(f"Request error for {url}: {exc}") from None
+        return True, None
     except Exception:
         logger.exception("Unexpected error fetching %s", url)
-        raise _NonRetryableError(f"Unexpected error fetching {url}") from None
+        return False, None
 
 
 def _run_trafilatura(
@@ -116,10 +84,7 @@ def _run_trafilatura(
     html: str,
     post_text: str | None = None,
 ) -> ExtractedContent | None:
-    """Run trafilatura extraction on HTML content.
-
-    Returns ExtractedContent or None if extraction yields no useful text.
-    """
+    """Run trafilatura extraction on HTML. Returns None if no useful text found."""
     try:
         full_text = trafilatura.extract(
             html,
@@ -133,6 +98,7 @@ def _run_trafilatura(
         return None
 
     if not full_text or not full_text.strip():
+        logger.warning("trafilatura returned empty content for %s", url)
         return None
 
     return ExtractedContent(
