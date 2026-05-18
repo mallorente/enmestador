@@ -1,0 +1,65 @@
+services:
+  # One-shot pipeline run — only starts with `docker compose run --rm pipeline`
+  # or `docker compose --profile run up`. Never auto-starts with plain `up`.
+  pipeline:
+    profiles: [run]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    volumes:
+      - ./volumes/user_data:/app/volumes/user_data
+      - ./volumes/state:/app/volumes/state
+      - ./volumes/obsidian_output:/app/volumes/obsidian_output
+      - ./volumes/obsidian_output_full:/app/volumes/obsidian_output_full
+    environment:
+      - USER_DATA_DIR=/app/volumes/user_data
+      - STATE_DIR=/app/volumes/state
+      - OUTPUT_DIR=/app/volumes/obsidian_output
+      - FETCH_TIMEOUT=30.0
+      - FETCH_MAX_RETRIES=3
+      - FETCH_BACKOFF_BASE=1.0
+      - MAX_REDIRECTS=5
+      - MAX_BOOKMARKS=500
+      - MAX_EXTERNAL_ARTICLES=3
+      - MAX_CONCURRENT=3
+      - LLM_MAX_RETRIES=3
+      - LLM_RATE_LIMIT_SEC=1.0
+      - LOCK_STALE_HOURS=4.0
+    healthcheck:
+      test: ["CMD", "python", "healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: "no"
+
+  # Long-running scheduler: runs the pipeline every 6h, restarts on crash.
+  # Start with: docker compose up -d scheduler
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "scheduler.py", "--interval-hours", "6"]
+    env_file:
+      - .env
+    volumes:
+      - ./volumes/user_data:/app/volumes/user_data
+      - ./volumes/state:/app/volumes/state
+      - ./volumes/obsidian_output:/app/volumes/obsidian_output
+    environment:
+      - USER_DATA_DIR=/app/volumes/user_data
+      - STATE_DIR=/app/volumes/state
+      - OUTPUT_DIR=/app/volumes/obsidian_output
+      - FETCH_TIMEOUT=30.0
+      - FETCH_MAX_RETRIES=3
+      - FETCH_BACKOFF_BASE=1.0
+      - MAX_REDIRECTS=5
+      - MAX_BOOKMARKS=500
+      - MAX_EXTERNAL_ARTICLES=3
+      - MAX_CONCURRENT=3
+      - LLM_MAX_RETRIES=3
+      - LLM_RATE_LIMIT_SEC=1.0
+      - LOCK_STALE_HOURS=4.0
+    restart: unless-stopped
