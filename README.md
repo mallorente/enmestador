@@ -85,9 +85,9 @@ python scheduler.py               # scheduler (cada 6h por defecto)
 ### Refrescar cookies caducadas
 
 ```bash
-python cookie_refresher.py             # abre Chrome visible, detecta sesión, exporta
-python cookie_refresher.py --platform x
-python cookie_refresher.py --platform linkedin
+python auth/cookie_refresher.py             # abre Chrome visible, detecta sesión, exporta
+python auth/cookie_refresher.py --platform x
+python auth/cookie_refresher.py --platform linkedin
 ```
 
 El pipeline detecta automáticamente cuando una sesión caduca (0 bookmarks + redirect a login) y envía una notificación Telegram con las instrucciones.
@@ -111,18 +111,28 @@ Copia `.env.example` a `.env` y rellena:
 ## Arquitectura
 
 ```
-main.py                 — orquestador principal, CLI
-scraper_x.py            — intercepción GraphQL Bookmarks de X.com
-scraper_linkedin.py     — intercepción API de posts guardados de LinkedIn
-playwright_extractor.py — extracción de hilos X y posts LinkedIn con Playwright
-web_extractor.py        — extracción de artículos externos (trafilatura)
-llm_processor.py        — enriquecimiento LLM con fallbacks
-writer.py               — escritura de notas Markdown
-notifier.py             — notificaciones Telegram
-auth_manager.py         — gestión del browser context con cookies
-cookie_refresher.py     — refresh interactivo de cookies caducadas
-scheduler.py            — loop de ejecución periódica
-state.py                — persistencia de cursores y URLs procesadas
+main.py                     — orquestador principal, CLI
+config.py / models.py       — configuración y modelos de datos
+scheduler.py                — loop de ejecución periódica
+
+scrapers/
+  x.py                      — intercepción GraphQL Bookmarks de X.com
+  linkedin.py               — intercepción API de posts guardados de LinkedIn
+
+extractors/
+  playwright.py             — extracción de hilos X y posts LinkedIn con Playwright
+  web.py                    — extracción de artículos externos (trafilatura)
+
+auth/
+  manager.py                — gestión del browser context con cookies
+  cookie_loader.py          — carga de cookies en formato Netscape
+  cookie_refresher.py       — refresh interactivo de cookies caducadas
+
+pipeline/
+  llm.py                    — enriquecimiento LLM con fallbacks
+  writer.py                 — escritura de notas Markdown
+  notifier.py               — notificaciones Telegram
+  state.py                  — persistencia de cursores y URLs procesadas
 ```
 
 ## Estructura de volúmenes

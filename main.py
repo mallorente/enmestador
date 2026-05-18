@@ -20,7 +20,7 @@ from playwright.async_api import BrowserContext
 
 load_dotenv()
 
-from auth_manager import AuthManager
+from auth.manager import AuthManager
 from config import (
     DEFAULT_OUTPUT_DIR,
     DEFAULT_STATE_DIR,
@@ -29,14 +29,14 @@ from config import (
     MAX_CONCURRENT,
     MAX_EXTERNAL_ARTICLES,
 )
-from llm_processor import EnrichmentError, LLMProcessor
+from pipeline.llm import EnrichmentError, LLMProcessor
 from models import Bookmark, EnrichedBookmark, ExternalArticle, ExtractedContent, PipelineResult, ScrapeMode, Source
-from notifier import Notifier
-from playwright_extractor import extract_linkedin_post, extract_with_playwright, extract_x_thread
-from scraper_linkedin import ScraperLinkedIn
-from scraper_x import ScraperX
-from state import CursorsStore, DeadLetterWriter, LockFile, ProcessedUrlStore, normalize_url
-from web_extractor import extract as web_extract
+from pipeline.notifier import Notifier
+from extractors.playwright import extract_linkedin_post, extract_with_playwright, extract_x_thread
+from scrapers.linkedin import ScraperLinkedIn
+from scrapers.x import ScraperX
+from pipeline.state import CursorsStore, DeadLetterWriter, LockFile, ProcessedUrlStore, normalize_url
+from extractors.web import extract as web_extract
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +209,7 @@ async def _process_bookmark(
     bookmark was still written without enrichment.
     Raises on any other failure so the caller can catch and dead-letter.
     """
-    from writer import Writer
+    from pipeline.writer import Writer
 
     extracted: ExtractedContent | None = None
 

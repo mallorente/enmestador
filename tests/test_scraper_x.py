@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from models import ScrapeMode, Source
-from scraper_x import (
+from scrapers.x import (
     ScraperX,
     _bookmark_from_graphql,
     _parse_graphql_response,
@@ -232,7 +232,7 @@ class TestScraperXBootstrap:
 
     def test_bootstrap_with_processed_skip(self, mock_page: AsyncMock, tmp_state: Path) -> None:
         """Bootstrap: skip URLs already in processed_urls store."""
-        from state import ProcessedUrlStore
+        from pipeline.state import ProcessedUrlStore
 
         store = ProcessedUrlStore(tmp_state)
         store.add("https://x.com/testuser/status/0", "x")
@@ -276,7 +276,7 @@ class TestScraperXDelta:
 
     def test_delta_uses_saved_cursor(self, tmp_state: Path) -> None:
         """Delta mode: reads cursor from CursorsStore."""
-        from state import CursorsStore
+        from pipeline.state import CursorsStore
 
         store = CursorsStore(tmp_state)
         store.save(Source.X, "saved_cursor==", "delta")
@@ -287,7 +287,7 @@ class TestScraperXDelta:
 
     def test_delta_fallback_to_bootstrap_when_no_cursor(self, tmp_state: Path) -> None:
         """Delta mode with no saved cursor: falls back to bootstrap."""
-        from state import CursorsStore
+        from pipeline.state import CursorsStore
 
         store = CursorsStore(tmp_state)
         data = store.get(Source.X)
@@ -295,7 +295,7 @@ class TestScraperXDelta:
 
     def test_cursor_save_after_scrape(self, tmp_state: Path) -> None:
         """Verify cursor is saved after a scrape run."""
-        from state import CursorsStore
+        from pipeline.state import CursorsStore
 
         store = CursorsStore(tmp_state)
         store.save(Source.X, "final_cursor==", "delta")

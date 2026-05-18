@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 
 from models import Bookmark, EnrichedBookmark, Enrichment, ExternalArticle, ExtractedContent, Source
-from writer import Writer, _build_body, _build_frontmatter, _sanitize_filename
+from pipeline.writer import Writer, _build_body, _build_frontmatter, _sanitize_filename
 
 # --- _sanitize_filename ---
 

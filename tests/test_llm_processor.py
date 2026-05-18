@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from llm_processor import EnrichmentError, LLMProcessor
+from pipeline.llm import EnrichmentError, LLMProcessor
 from models import Bookmark, ExtractedContent, Source
 
 
@@ -57,11 +57,17 @@ TAGS: python, architecture, testing"""
 
 @pytest.fixture
 def processor():
-    with patch("llm_processor.LLM_BASE_URL", ""), \
-         patch("llm_processor.LLM_API_KEY", ""):
+    with patch("pipeline.llm.LLM_BASE_URL", ""), \
+         patch("pipeline.llm.LLM_API_KEY", ""):
         p = LLMProcessor()
-        p.client = AsyncMock()
-        return p
+    mock_client = AsyncMock()
+    p._endpoints = [
+        ("kimi-k2.6", mock_client),
+        ("deepseek-v4-pro", mock_client),
+        ("deepseek-v4-flash", mock_client),
+    ]
+    p.client = mock_client
+    return p
 
 
 class TestPromptBuilder:
@@ -256,7 +262,7 @@ class TestBackoffTiming:
         processor.client.chat.completions.create.side_effect = side_effect
 
         with pytest.raises(EnrichmentError):
-            await processor._try_model("test-model", "prompt")
+            await processor._try_model("test-model", processor.client, "prompt")
 
         assert len(call_times) == 3
         delay_1 = call_times[1] - call_times[0]
@@ -290,8 +296,8 @@ class TestRateLimiter:
 
 class TestPerSourceRateLimiting:
     def test_rate_limit_dict_initialized(self):
-        with patch("llm_processor.LLM_BASE_URL", ""), \
-             patch("llm_processor.LLM_API_KEY", ""):
+        with patch("pipeline.llm.LLM_BASE_URL", ""), \
+             patch("pipeline.llm.LLM_API_KEY", ""):
             p = LLMProcessor()
             assert isinstance(p._last_request_time, dict)
             assert len(p._last_request_time) == 0
@@ -337,33 +343,28 @@ class TestPerSourceRateLimiting:
 
 
 class TestModelResolution:
-    def test_default_models(self):
-        with patch("llm_processor.LLM_MODEL", ""), \
-             patch("llm_processor.LLM_MODEL_FALLBACK_1", ""), \
-             patch("llm_processor.LLM_MODEL_FALLBACK_2", ""), \
-             patch("llm_processor.LLM_BASE_URL", ""), \
-             patch("llm_processor.LLM_API_KEY", ""):
+    def test_no_endpoints_when_creds_missing(self):
+        with patch("pipeline.llm.LLM_BASE_URL", ""), \
+             patch("pipeline.llm.LLM_API_KEY", ""):
             p = LLMProcessor()
-            assert p.models == [
-                "kimi-k2.6",
-                "deepseek-v4-pro",
-                "deepseek-v4-flash",
-            ]
+            assert p._endpoints == []
 
     def test_env_overrides_models(self):
-        with patch("llm_processor.LLM_MODEL", "gpt-4"), \
-             patch("llm_processor.LLM_MODEL_FALLBACK_1", "gpt-3.5"), \
-             patch("llm_processor.LLM_MODEL_FALLBACK_2", "claude"), \
-             patch("llm_processor.LLM_BASE_URL", ""), \
-             patch("llm_processor.LLM_API_KEY", ""):
+        with patch("pipeline.llm.LLM_MODEL", "gpt-4"), \
+             patch("pipeline.llm.LLM_MODEL_FALLBACK_1", "gpt-3.5"), \
+             patch("pipeline.llm.LLM_MODEL_FALLBACK_2", "claude"), \
+             patch("pipeline.llm.LLM_BASE_URL", "https://api.test"), \
+             patch("pipeline.llm.LLM_API_KEY", "key"), \
+             patch("pipeline.llm._make_client", return_value=AsyncMock()):
             p = LLMProcessor()
-            assert p.models == ["gpt-4", "gpt-3.5", "claude"]
+            assert [m for m, _ in p._endpoints] == ["gpt-4", "gpt-3.5", "claude"]
 
     def test_partial_env_overrides(self):
-        with patch("llm_processor.LLM_MODEL", "gpt-4"), \
-             patch("llm_processor.LLM_MODEL_FALLBACK_1", ""), \
-             patch("llm_processor.LLM_MODEL_FALLBACK_2", ""), \
-             patch("llm_processor.LLM_BASE_URL", ""), \
-             patch("llm_processor.LLM_API_KEY", ""):
+        with patch("pipeline.llm.LLM_MODEL", "gpt-4"), \
+             patch("pipeline.llm.LLM_MODEL_FALLBACK_1", ""), \
+             patch("pipeline.llm.LLM_MODEL_FALLBACK_2", ""), \
+             patch("pipeline.llm.LLM_BASE_URL", "https://api.test"), \
+             patch("pipeline.llm.LLM_API_KEY", "key"), \
+             patch("pipeline.llm._make_client", return_value=AsyncMock()):
             p = LLMProcessor()
-            assert p.models == ["gpt-4"]
+            assert [m for m, _ in p._endpoints] == ["gpt-4"]

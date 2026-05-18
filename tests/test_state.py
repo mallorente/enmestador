@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 from models import Bookmark, DeadLetter, Source
-from state import (
+from pipeline.state import (
     CursorsStore,
     DeadLetterWriter,
     LockFile,

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from models import ScrapeMode, Source
-from scraper_linkedin import (
+from scrapers.linkedin import (
     LINKEDIN_API_PATTERNS,
     LINKEDIN_VOYAGER_PATTERN,
     ScraperLinkedIn,
@@ -316,7 +316,7 @@ class TestScraperLinkedInApiSuccess:
 
     def test_skip_processed_urls(self, mock_page: AsyncMock, tmp_state: Path) -> None:
         """API interception: skip URLs already in processed_urls store."""
-        from state import ProcessedUrlStore
+        from pipeline.state import ProcessedUrlStore
 
         store = ProcessedUrlStore(tmp_state)
         store.add("https://www.linkedin.com/feed/update/1", "linkedin")

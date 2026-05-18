@@ -10,7 +10,7 @@ from pathlib import Path
 
 from playwright.async_api import BrowserContext, async_playwright
 
-from cookie_loader import load_netscape_cookies
+from auth.cookie_loader import load_netscape_cookies
 
 logger = logging.getLogger(__name__)
 

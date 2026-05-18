@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from models import Bookmark, EnrichedBookmark, Enrichment, ExternalArticle, ExtractedContent, PipelineResult, ScrapeMode, Source
-from state import DeadLetter, LockFile
+from pipeline.state import DeadLetter, LockFile
 
 
 def _make_bookmark(url: str = "https://example.com/article", source: Source = Source.X) -> Bookmark:
@@ -214,7 +214,7 @@ async def test_single_failure_survives(tmp_path: Path) -> None:
                                 mock_llm = AsyncMock()
 
                                 from models import EnrichedBookmark, Enrichment, ExtractedContent
-                                from llm_processor import EnrichmentError
+                                from pipeline.llm import EnrichmentError
 
                                 def enrich_side_effect(bookmark, content=None):
                                     if "bad" in str(bookmark.url):
@@ -292,7 +292,7 @@ async def test_single_failure_sends_bookmark_error_notification(tmp_path: Path) 
                         with patch("main.ScraperLinkedIn") as MockScraperLI:
                             MockScraperLI.return_value.scrape = AsyncMock(return_value=[])
                             with patch("main.LLMProcessor") as MockLLM:
-                                from llm_processor import EnrichmentError
+                                from pipeline.llm import EnrichmentError
 
                                 mock_llm = AsyncMock()
                                 mock_llm.enrich = AsyncMock(
@@ -485,7 +485,7 @@ async def test_dead_letter_accumulation(tmp_path: Path) -> None:
                         with patch("main.ScraperLinkedIn") as MockScraperLI:
                             MockScraperLI.return_value.scrape = AsyncMock(return_value=[])
                             with patch("main.LLMProcessor") as MockLLM:
-                                from llm_processor import EnrichmentError
+                                from pipeline.llm import EnrichmentError
                                 mock_llm = AsyncMock()
                                 mock_llm.enrich = AsyncMock(
                                     side_effect=EnrichmentError("All models failed")
@@ -1145,7 +1145,7 @@ async def test_parallel_single_failure_others_succeed(tmp_path: Path) -> None:
                             MockScraperLI.return_value.scrape = AsyncMock(return_value=[])
                             with patch("main.LLMProcessor") as MockLLM:
                                 mock_llm = AsyncMock()
-                                from llm_processor import EnrichmentError
+                                from pipeline.llm import EnrichmentError
 
                                 def enrich_side_effect(bookmark, content=None):
                                     if "bad" in str(bookmark.url):

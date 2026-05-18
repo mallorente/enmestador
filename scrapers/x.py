@@ -11,7 +11,7 @@ from pathlib import Path
 from playwright.async_api import Page, Response
 
 from models import Bookmark, ScrapeMode, Source
-from state import CursorsStore, ProcessedUrlStore
+from pipeline.state import CursorsStore, ProcessedUrlStore
 
 logger = logging.getLogger(__name__)
 

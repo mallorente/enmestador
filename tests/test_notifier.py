@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from models import PipelineResult
-from notifier import Notifier
+from pipeline.notifier import Notifier
 
 
 def _make_response(status_code: int, text: str = "OK") -> httpx.Response:
@@ -18,7 +18,7 @@ def _make_response(status_code: int, text: str = "OK") -> httpx.Response:
 def mock_client() -> AsyncMock:
     """Provide a mocked httpx.AsyncClient."""
     client = AsyncMock()
-    with patch("notifier.httpx.AsyncClient", return_value=client):
+    with patch("pipeline.notifier.httpx.AsyncClient", return_value=client):
         yield client
 
 
