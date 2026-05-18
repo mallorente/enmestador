@@ -38,6 +38,10 @@ RUN playwright install chromium
 
 # Copy application code
 COPY *.py ./
+COPY scrapers/ scrapers/
+COPY extractors/ extractors/
+COPY auth/ auth/
+COPY pipeline/ pipeline/
 
 # Create volume mount points
 RUN mkdir -p /app/volumes/user_data /app/volumes/state /app/volumes/obsidian_output
