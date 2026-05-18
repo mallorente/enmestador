@@ -6,7 +6,7 @@ Pipeline PKM personal que scrapa los bookmarks de X.com y los posts guardados de
 
 ---
 
-**Sobre el nombre.** *Enmestar* es un término del habla de la Huerta de Murcia (el panocho, dialecto de la región de Murcia, España), derivado de *mies* (del latín *messis*: la cosecha de cereal madura, lista para segar). El prefijo verbalizador *en-* convierte el sustantivo en acción: ir al campo, recoger lo que está listo, traerlo a casa. No está en el diccionario de la RAE, pero sigue vivo en el vocabulario agrícola murciano. La metáfora encaja: este programa sale a tu feed cada pocas horas, recoge lo que has guardado, y lo trae a tu PKM.
+**Sobre el nombre.** *Enmestar* es un término del habla de la Huerta de Murcia (el panocho, dialecto de la región de Murcia, España), derivado de *mies* (del latín *messis*: la cosecha de cereal madura, lista para segar). El prefijo verbalizador *en-* convierte el sustantivo en acción: ir al campo, recoger lo que está listo, traerlo a casa. No está en el diccionario de la RAE, pero sigue vivo en el vocabulario agrícola murciano.
 
 ---
 
