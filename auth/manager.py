@@ -55,7 +55,6 @@ class AuthManager:
         self._playwright = await async_playwright().start()
         headless = self._headless if self._headless is not None else True
 
-        # X.com blocks true headless; use headful but push window off-screen
         launch_args = [
             "--disable-blink-features=AutomationControlled",
             "--no-sandbox",
@@ -63,14 +62,14 @@ class AuthManager:
             "--disable-infobars",
             "--disable-dev-shm-usage",
         ]
-        if headless:
+        if not headless:
             launch_args.append("--window-position=-32000,-32000")
 
         # Use persistent context so LinkedIn session survives
         # (localStorage, IndexedDB, cookies all persist in user_data_dir)
         self._context = await self._playwright.chromium.launch_persistent_context(
             user_data_dir=str(self.user_data_dir),
-            headless=headless if not headless else False,
+            headless=headless,
             args=launch_args,
             viewport={"width": 1280, "height": 800},
             user_agent=(
