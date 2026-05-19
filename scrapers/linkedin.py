@@ -7,6 +7,7 @@ scrolling and parsing.
 
 import logging
 import os
+import random
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -16,6 +17,17 @@ from models import Bookmark, ScrapeMode, Source
 from pipeline.state import ProcessedUrlStore
 
 logger = logging.getLogger(__name__)
+
+
+def _human_scroll_ms() -> int:
+    """Return a random scroll wait time in milliseconds (1500–4000ms)."""
+    return random.randint(1500, 4000)
+
+
+def _human_scroll_px() -> int:
+    """Return a random vertical scroll amount in pixels (300–900px)."""
+    return random.randint(300, 900)
+
 
 # LinkedIn API URL patterns — broader to catch current endpoints (2025-2026)
 LINKEDIN_API_PATTERNS = [
@@ -491,17 +503,18 @@ class ScraperLinkedIn:
         # Phase 2: paginate — scroll to trigger more API responses
         logger.info("LinkedIn API interception: %d initial posts, paginating...", len(self._api_posts))
         previous_count = len(self._api_posts)
-        scroll_interval = 2000
         no_new_count = 0
         max_no_new = 3  # Stop after 3 consecutive scrolls with no new posts
         pagination_timeout = int(os.getenv("LI_PAGINATION_TIMEOUT", "60")) * 1000
         pagination_elapsed = 0
 
         while pagination_elapsed < pagination_timeout and len(self._api_posts) < self.max_posts:
+            scroll_px = _human_scroll_px()
+            scroll_wait = _human_scroll_ms()
             # Scroll down to trigger more API calls
-            await self.page.evaluate("window.scrollBy(0, window.innerHeight)")
-            await self.page.wait_for_timeout(scroll_interval)
-            pagination_elapsed += scroll_interval
+            await self.page.evaluate(f"window.scrollBy(0, {scroll_px})")
+            await self.page.wait_for_timeout(scroll_wait)
+            pagination_elapsed += scroll_wait
 
             # Process any new API responses
             await self._process_responses_async()
@@ -604,7 +617,6 @@ class ScraperLinkedIn:
         """
         results: list[Bookmark] = []
         max_scroll_time_ms = DOM_FALLBACK_TIMEOUT_SECONDS * 1000
-        scroll_interval_ms = 3000
         elapsed = 0
         previous_count = 0
 
@@ -630,16 +642,17 @@ class ScraperLinkedIn:
 
             # Check if we found new posts this iteration
             current_count = len(dom_posts)
-            if current_count == previous_count and current_count > 0 and elapsed > scroll_interval_ms * 2:
+            if current_count == previous_count and current_count > 0 and elapsed > _human_scroll_ms() * 2:
                 logger.info("DOM fallback: no new posts found, stopping")
                 break
 
             previous_count = current_count
 
-            # Scroll down
-            await self.page.evaluate("window.scrollBy(0, window.innerHeight)")
-            await self.page.wait_for_timeout(scroll_interval_ms)
-            elapsed += scroll_interval_ms
+            # Scroll down with randomized amounts and delays
+            scroll_wait = _human_scroll_ms()
+            await self.page.evaluate(f"window.scrollBy(0, {_human_scroll_px()})")
+            await self.page.wait_for_timeout(scroll_wait)
+            elapsed += scroll_wait
 
         return results
 

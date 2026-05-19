@@ -735,3 +735,27 @@ class TestNoCookieInjectionAnywhere:
         import pathlib
         src = pathlib.Path("auth/manager.py").read_text()
         assert "cookie_loader" not in src
+
+
+class TestHumanizedScroll:
+    """LinkedIn scraper uses variable scroll amounts and delays."""
+
+    def test_human_scroll_ms_in_range(self) -> None:
+        from scrapers.linkedin import _human_scroll_ms
+        for _ in range(50):
+            val = _human_scroll_ms()
+            assert 1500 <= val <= 4000, f"_human_scroll_ms() returned {val}, expected 1500-4000"
+
+    def test_human_scroll_px_in_range(self) -> None:
+        from scrapers.linkedin import _human_scroll_px
+        for _ in range(50):
+            val = _human_scroll_px()
+            assert 300 <= val <= 900, f"_human_scroll_px() returned {val}, expected 300-900"
+
+    def test_scroll_values_vary(self) -> None:
+        """Values should not all be the same — confirms randomness."""
+        from scrapers.linkedin import _human_scroll_ms, _human_scroll_px
+        ms_vals = [_human_scroll_ms() for _ in range(20)]
+        px_vals = [_human_scroll_px() for _ in range(20)]
+        assert len(set(ms_vals)) > 1, "All _human_scroll_ms() values identical — not random"
+        assert len(set(px_vals)) > 1, "All _human_scroll_px() values identical — not random"
