@@ -33,7 +33,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright Chromium browser
+# Install Patchright Chromium browser
 RUN patchright install chromium
 
 # Copy application code
