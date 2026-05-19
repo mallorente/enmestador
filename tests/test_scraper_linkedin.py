@@ -712,3 +712,26 @@ class TestCookieRefresherNoPlawright:
         assert "li_cookies.txt" not in src
         assert "_playwright_cookies_to_netscape" not in src
         assert "write_text" not in src
+
+
+class TestNoCookieInjectionAnywhere:
+    """Verify cookie injection is fully removed from the codebase."""
+
+    def test_auth_manager_has_no_inject_cookies(self) -> None:
+        import importlib
+        import auth.manager as am
+        importlib.reload(am)
+        assert not hasattr(am.AuthManager, '_inject_cookies')
+
+    def test_auth_manager_has_no_cookie_txt_refs(self) -> None:
+        import pathlib
+        src = pathlib.Path("auth/manager.py").read_text()
+        assert "x_cookies.txt" not in src
+        assert "li_cookies.txt" not in src
+        assert "_inject_cookies" not in src
+        assert "load_netscape_cookies" not in src
+
+    def test_cookie_loader_not_imported_in_manager(self) -> None:
+        import pathlib
+        src = pathlib.Path("auth/manager.py").read_text()
+        assert "cookie_loader" not in src
