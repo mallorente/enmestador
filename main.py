@@ -16,7 +16,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from dotenv import load_dotenv
-from playwright.async_api import BrowserContext
+from patchright.async_api import BrowserContext
 
 load_dotenv()
 
@@ -416,6 +416,13 @@ _COOKIE_NOISE_PATTERNS = [
     re.compile(r"select accept to consent", re.IGNORECASE),
     re.compile(r"linkedin and 3rd parties use.*cookie", re.IGNORECASE),
     re.compile(r"manage settings.*cookie policy", re.IGNORECASE),
+    # Spanish X.com cookie consent page
+    re.compile(r"¿alguien dijo.*?cookies", re.IGNORECASE),
+    re.compile(r"aceptar todas las cookies", re.IGNORECASE),
+    re.compile(r"x y sus socios utilizan cookies", re.IGNORECASE),
+    re.compile(r"rechazar cookies no necesarias", re.IGNORECASE),
+    # Spanish generic cookie consent
+    re.compile(r"nosotros y nuestros socios.*?cookies", re.IGNORECASE),
 ]
 
 

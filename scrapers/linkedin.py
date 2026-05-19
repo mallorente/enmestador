@@ -10,7 +10,7 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-from playwright.async_api import Page, Response
+from patchright.async_api import Page, Response
 
 from models import Bookmark, ScrapeMode, Source
 from pipeline.state import ProcessedUrlStore
@@ -64,8 +64,10 @@ def _parse_linkedin_api_response(body: str) -> tuple[list[dict], str | None]:
     cursor: str | None = None
 
     # Structure A: searchDashClustersByAll (current GraphQL saved posts)
-    # Path: data.data.searchDashClustersByAll.elements[].items[]
-    search_data = data.get("data", {}).get("data", {})
+    # LinkedIn uses two formats: single-nested (data.KEY) and double-nested (data.data.KEY).
+    # Try the double-nested first, fall back to single-nested so both formats work.
+    top_data = data.get("data", {})
+    search_data = top_data.get("data", {}) or top_data
     if search_data:
         for key in search_data:
             cluster = search_data[key]
@@ -449,6 +451,17 @@ class ScraperLinkedIn:
             wait_until="domcontentloaded",
             timeout=60000,
         )
+        await self.page.wait_for_timeout(3000)
+        # Diagnostic: capture what LinkedIn is showing
+        try:
+            screenshot_path = "/app/volumes/state/linkedin_debug.png"
+            await self.page.screenshot(path=screenshot_path)
+            logger.info("LinkedIn page URL after load: %s", self.page.url)
+            logger.info("LinkedIn screenshot saved to %s", screenshot_path)
+            page_title = await self.page.title()
+            logger.info("LinkedIn page title: %s", page_title)
+        except Exception as e:
+            logger.warning("Could not take LinkedIn screenshot: %s", e)
 
         # Phase 1: wait for initial API responses
         initial_timeout = API_TIMEOUT_SECONDS * 1000
@@ -504,11 +517,17 @@ class ScraperLinkedIn:
                 previous_count = current_count
 
         # Convert raw posts to Bookmarks, deduplicating against processed URLs
+        logger.info("Converting %d raw posts to bookmarks (processed_urls has %d entries)", len(self._api_posts), len(processed_urls))
         for raw in self._api_posts:
             bm = _bookmark_from_linkedin_post(raw)
             if bm is None:
                 logger.warning("Could not convert raw post to bookmark: %s", {k: str(v)[:80] for k, v in raw.items()})
-            elif str(bm.url) not in processed_urls and str(bm.url) not in seen_urls:
+            elif str(bm.url) in processed_urls:
+                logger.info("Skipping already-processed: %s", str(bm.url)[:100])
+            elif str(bm.url) in seen_urls:
+                logger.info("Skipping duplicate in this run: %s", str(bm.url)[:100])
+            else:
+                logger.info("Adding bookmark: %s", str(bm.url)[:100])
                 results.append(bm)
                 seen_urls.add(str(bm.url))
                 if len(results) >= self.max_posts:
@@ -553,7 +572,8 @@ class ScraperLinkedIn:
         for response in new_responses:
             try:
                 body = await response.text()
-            except Exception:
+            except Exception as exc:
+                logger.warning("Failed to read LinkedIn response body from %s: %s", response.url[:80], exc)
                 continue
 
             posts, cursor = _parse_linkedin_api_response(body)
@@ -563,11 +583,11 @@ class ScraperLinkedIn:
                     if post_url and post_url not in self._seen_urls:
                         self._api_posts.append(post)
                         self._seen_urls.add(post_url)
-                logger.debug("Parsed %d posts from API response (total: %d)", len(posts), len(self._api_posts))
+                logger.info("Parsed %d posts from API response (total: %d)", len(posts), len(self._api_posts))
             else:
-                logger.debug(
-                    "LinkedIn API response yielded 0 posts from %s: %s",
-                    response.url[:80], body[:300],
+                logger.warning(
+                    "LinkedIn API response yielded 0 posts from %s (body preview: %.500s)",
+                    response.url[:80], body,
                 )
             if cursor:
                 self._api_cursor = cursor

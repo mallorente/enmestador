@@ -14,7 +14,7 @@ import logging
 import re
 from datetime import UTC, datetime
 
-from playwright.async_api import BrowserContext, Page
+from patchright.async_api import BrowserContext, Page
 
 from config import FETCH_TIMEOUT
 from models import ExtractedContent
@@ -25,6 +25,7 @@ MAX_CONTENT_LENGTH = 50000
 NAVIGATION_TIMEOUT = FETCH_TIMEOUT * 1000
 
 CONTENT_SELECTORS = [
+    "[data-testid='article-body']",  # X/Twitter long-form articles
     "article",
     '[role="article"]',
     ".post-content",
@@ -536,6 +537,8 @@ async def _dismiss_x_overlay(page: Page) -> None:
     dismiss_selectors = [
         '[data-testid="button"] span:text("Accept all cookies")',
         '[data-testid="button"] span:text("Accept cookies")',
+        '[data-testid="button"] span:text("Aceptar todas las cookies")',
+        'button:has-text("Aceptar todas las cookies")',
     ]
     for sel in dismiss_selectors:
         try:
@@ -618,6 +621,11 @@ def _clean_extracted_text(text: str) -> str:
         r"Show translation\n?",
         r"^Subscribe\n.*?(?:\n|$)",
         r"^Follow\n.*?(?:\n|$)",
+        # Spanish X.com cookie consent block
+        r"¿Alguien dijo[^\n]*cookies\?[\s\S]*?(?:Rechazar cookies no necesarias|Aceptar todas las cookies)\n?",
+        r"Para ver los atajos del teclado[^\n]*\n?",
+        r"Ver atajos (?:del teclado|de teclado)\n?",
+        r"Ver posts nuevos\n?",
     ]
     for pattern in noise_patterns:
         text = re.sub(pattern, "", text, flags=re.IGNORECASE | re.DOTALL | re.MULTILINE)

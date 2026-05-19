@@ -20,7 +20,7 @@ import os
 import time
 from pathlib import Path
 
-from playwright.async_api import BrowserContext, async_playwright
+from patchright.async_api import BrowserContext, async_playwright
 
 logger = logging.getLogger(__name__)
 

@@ -527,6 +527,13 @@ class TestSearchDashClusters:
         assert cursor == "page2"
 
 
+class TestPatchrightImport:
+    """Verify patchright is installed and importable."""
+
+    def test_patchright_importable(self) -> None:
+        from patchright.async_api import async_playwright, BrowserContext, Page, Response  # noqa: F401
+
+
 class TestApiPagination:
     """Tests for LinkedIn API pagination via scrolling."""
 

@@ -8,7 +8,7 @@ import logging
 import os
 from pathlib import Path
 
-from playwright.async_api import BrowserContext, async_playwright
+from patchright.async_api import BrowserContext, async_playwright
 
 from auth.cookie_loader import load_netscape_cookies
 

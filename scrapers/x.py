@@ -8,7 +8,7 @@ import json
 import logging
 from pathlib import Path
 
-from playwright.async_api import Page, Response
+from patchright.async_api import Page, Response
 
 from models import Bookmark, ScrapeMode, Source
 from pipeline.state import CursorsStore, ProcessedUrlStore
