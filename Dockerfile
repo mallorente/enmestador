@@ -4,7 +4,7 @@ FROM python:3.11-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Install Playwright Chromium system dependencies
+# Install Playwright/Patchright Chromium system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 \
     libnspr4 \
@@ -34,7 +34,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Playwright Chromium browser
-RUN playwright install chromium
+RUN patchright install chromium
 
 # Copy application code
 COPY *.py ./
