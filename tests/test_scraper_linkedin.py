@@ -688,3 +688,27 @@ class TestApiPagination:
             scraper.scrape(ScrapeMode.BOOTSTRAP)
         )
         assert len(results) == 1
+
+
+class TestCookieRefresherNoPlawright:
+    """cookie_refresher.py must use patchright, not playwright."""
+
+    def test_no_playwright_import_in_refresher(self) -> None:
+        import ast
+        import pathlib
+        src = pathlib.Path("auth/cookie_refresher.py").read_text()
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                module = getattr(node, 'module', '') or ''
+                assert 'playwright' not in module, (
+                    f"cookie_refresher.py still imports from playwright: {module}"
+                )
+
+    def test_no_txt_cookie_export_in_refresher(self) -> None:
+        import pathlib
+        src = pathlib.Path("auth/cookie_refresher.py").read_text()
+        assert "x_cookies.txt" not in src
+        assert "li_cookies.txt" not in src
+        assert "_playwright_cookies_to_netscape" not in src
+        assert "write_text" not in src
