@@ -1,7 +1,8 @@
 """Auth manager for the PKM ingestion pipeline.
 
-Launches a Playwright browser context and injects exported cookies for X.com
-and LinkedIn authentication.
+Launches a Patchright persistent browser context. Session is maintained
+entirely via the persistent profile directory — no cookie injection needed.
+Run auth/cookie_refresher.py whenever the session expires.
 """
 
 import logging
@@ -10,20 +11,66 @@ from pathlib import Path
 
 from patchright.async_api import BrowserContext, async_playwright
 
-from auth.cookie_loader import load_netscape_cookies
-
 logger = logging.getLogger(__name__)
+
+# Chrome 132 matches the Chromium bundled with patchright/playwright 1.50
+_CHROME_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/132.0.0.0 Safari/537.36"
+)
+
+# Stealth patches injected into every page before any script runs.
+# Patchright already handles the binary-level tells; this covers JS-accessible
+# APIs that sites probe to fingerprint automation.
+_STEALTH_INIT_SCRIPT = """
+(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+    Object.defineProperty(navigator, 'plugins', {
+        get: () => {
+            const arr = [
+                { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+                { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+                { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+            ];
+            arr.refresh = () => {};
+            arr.item = (i) => arr[i];
+            arr.namedItem = (n) => arr.find(p => p.name === n) || null;
+            Object.defineProperty(arr, 'length', { get: () => 3 });
+            return arr;
+        }
+    });
+
+    Object.defineProperty(navigator, 'languages', { get: () => ['es-ES', 'es', 'en-US', 'en'] });
+    Object.defineProperty(navigator, 'platform', { get: () => 'Linux x86_64' });
+
+    if (!window.chrome) {
+        window.chrome = { runtime: {}, loadTimes: () => ({}), csi: () => ({}) };
+    }
+
+    if (navigator.permissions && navigator.permissions.query) {
+        const _origQuery = navigator.permissions.query.bind(navigator.permissions);
+        navigator.permissions.query = (params) => {
+            if (params.name === 'notifications') {
+                return Promise.resolve({ state: 'prompt', onchange: null });
+            }
+            return _origQuery(params);
+        };
+    }
+
+    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+})();
+"""
 
 
 class AuthManager:
-    """Manages a Playwright browser context with injected cookies.
+    """Manages a Patchright persistent browser context.
 
-    Expects Netscape-format cookies.txt files in the user_data_dir:
-        - x_cookies.txt   for x.com
-        - li_cookies.txt  for linkedin.com
-
-    These files should be exported from your real browser using an extension
-    like "Get cookies.txt LOCALLY" or "Export Cookies".
+    Session is maintained via the persistent profile directory (user_data_dir).
+    No cookie file injection — run auth/cookie_refresher.py to renew the session.
     """
 
     def __init__(
@@ -32,10 +79,10 @@ class AuthManager:
         headless: bool | None = None,
     ) -> None:
         self.user_data_dir = Path(user_data_dir)
-        # Explicit arg wins; otherwise read HEADLESS env var (default: true)
         if headless is None:
             headless = os.getenv("HEADLESS", "true").strip().lower() != "false"
         self._headless = headless
+        self._slow_mo = int(os.getenv("SLOW_MO", "0"))
         self._playwright = None
         self._context: BrowserContext | None = None
 
@@ -45,93 +92,74 @@ class AuthManager:
         return self._context
 
     async def ensure_browser(self) -> BrowserContext:
-        """Launch browser with persistent profile, and inject cookies."""
+        """Launch a persistent browser context with stealth configuration."""
         if self._context is not None:
             return self._context
 
         self.user_data_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("Launching browser with persistent profile (dir: %s)", self.user_data_dir)
+        logger.info(
+            "Launching browser (profile: %s, headless=%s, slow_mo=%d)",
+            self.user_data_dir, self._headless, self._slow_mo,
+        )
 
         self._playwright = await async_playwright().start()
-        headless = self._headless if self._headless is not None else True
 
         launch_args = [
-            "--disable-blink-features=AutomationControlled",
             "--no-sandbox",
             "--disable-setuid-sandbox",
             "--disable-infobars",
             "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-features=IsolateOrigins,site-per-process",
         ]
-        if not headless:
-            launch_args.append("--window-position=-32000,-32000")
+        if not self._headless:
+            launch_args.append("--window-position=0,0")
 
-        # Use persistent context so LinkedIn session survives
-        # (localStorage, IndexedDB, cookies all persist in user_data_dir)
         self._context = await self._playwright.chromium.launch_persistent_context(
             user_data_dir=str(self.user_data_dir),
-            headless=headless,
+            headless=self._headless,
+            slow_mo=self._slow_mo,
             args=launch_args,
             viewport={"width": 1280, "height": 800},
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/133.0.0.0 Safari/537.36"
-            ),
+            user_agent=_CHROME_UA,
+            locale="es-ES",
+            timezone_id="Europe/Madrid",
         )
 
-        # Inject anti-detection script into every page
-        await self._context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => false });
-            window.chrome = { runtime: {} };
-            Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
-            Object.defineProperty(navigator, 'languages', { get: () => ['en-US','en'] });
-        """)
+        await self._context.add_init_script(_STEALTH_INIT_SCRIPT)
+        await self._setup_linkedin_csrf()
 
-        # Inject cookies from Netscape files as supplement to profile data
-        await self._inject_cookies("x_cookies.txt")
-        li_cookies = await self._inject_cookies("li_cookies.txt")
-
-        # For LinkedIn: intercept requests and add csrf-token header from JSESSIONID.
-        # LinkedIn's Voyager API requires this header for authenticated calls.
-        if li_cookies:
-            jsessionid = None
-            for cookie in li_cookies:
-                if cookie["name"] == "JSESSIONID":
-                    jsessionid = cookie["value"].strip('"')
-                    break
-            if jsessionid:
-                csrf_token = jsessionid
-                logger.info("Setting LinkedIn CSRF token from JSESSIONID")
-
-                async def _add_linkedin_headers(route):
-                    headers = dict(route.request.headers)
-                    headers["csrf-token"] = csrf_token
-                    headers["x-restli-protocol-version"] = "2.0.0"
-                    await route.continue_(headers=headers)
-
-                await self._context.route(
-                    "**/voyager/**",
-                    _add_linkedin_headers,
-                )
-
-        logger.info("Browser context ready (persistent profile, headless=%s)", headless)
+        logger.info("Browser context ready")
         return self._context
 
-    async def _inject_cookies(self, filename: str) -> list[dict] | None:
-        """Load a Netscape cookies file and inject into the browser context.
+    async def _setup_linkedin_csrf(self) -> None:
+        """Inject csrf-token header for LinkedIn Voyager API calls.
 
-        Returns the list of cookies loaded, or None if the file doesn't exist.
+        Reads JSESSIONID from the persistent profile's cookies.
+        No-op if not present (session not yet established).
         """
-        cookie_path = self.user_data_dir / filename
-        if not cookie_path.exists():
-            logger.warning("Cookie file not found: %s", cookie_path)
-            return None
+        try:
+            all_cookies = await self._context.cookies()
+            jsessionid = next(
+                (c["value"].strip('"') for c in all_cookies if c["name"] == "JSESSIONID"),
+                None,
+            )
+            if not jsessionid:
+                logger.debug("JSESSIONID not in profile — LinkedIn CSRF header skipped")
+                return
 
-        cookies = load_netscape_cookies(cookie_path)
-        if cookies:
-            await self._context.add_cookies(cookies)
-            logger.info("Injected %d cookies from %s", len(cookies), filename)
-        return cookies
+            csrf_token = jsessionid
+            logger.info("Setting LinkedIn CSRF token from profile JSESSIONID")
+
+            async def _add_linkedin_headers(route):
+                headers = dict(route.request.headers)
+                headers["csrf-token"] = csrf_token
+                headers["x-restli-protocol-version"] = "2.0.0"
+                await route.continue_(headers=headers)
+
+            await self._context.route("**/voyager/**", _add_linkedin_headers)
+        except Exception as exc:
+            logger.warning("Could not set LinkedIn CSRF header: %s", exc)
 
     async def close(self) -> None:
         """Close the persistent browser context and playwright instance."""

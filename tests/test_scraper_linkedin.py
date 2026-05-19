@@ -534,6 +534,41 @@ class TestPatchrightImport:
         from patchright.async_api import async_playwright, BrowserContext, Page, Response  # noqa: F401
 
 
+class TestAuthManagerConfig:
+    """Verify AuthManager reads SLOW_MO env var and has no cookie injection."""
+
+    def test_slow_mo_defaults_to_zero(self, monkeypatch) -> None:
+        monkeypatch.delenv("SLOW_MO", raising=False)
+        import importlib
+        import auth.manager as am
+        importlib.reload(am)
+        mgr = am.AuthManager(user_data_dir="/tmp/test_auth_cfg")
+        assert mgr._slow_mo == 0
+
+    def test_slow_mo_reads_env_var(self, monkeypatch) -> None:
+        monkeypatch.setenv("SLOW_MO", "75")
+        import importlib
+        import auth.manager as am
+        importlib.reload(am)
+        mgr = am.AuthManager(user_data_dir="/tmp/test_auth_cfg")
+        assert mgr._slow_mo == 75
+
+    def test_no_inject_cookies_method(self) -> None:
+        import importlib
+        import auth.manager as am
+        importlib.reload(am)
+        assert not hasattr(am.AuthManager, '_inject_cookies'), (
+            "_inject_cookies must be removed — use persistent profile only"
+        )
+
+    def test_no_cookie_txt_references(self) -> None:
+        import pathlib
+        src = pathlib.Path("auth/manager.py").read_text()
+        assert "x_cookies.txt" not in src
+        assert "li_cookies.txt" not in src
+        assert "_inject_cookies" not in src
+
+
 class TestApiPagination:
     """Tests for LinkedIn API pagination via scrolling."""
 
