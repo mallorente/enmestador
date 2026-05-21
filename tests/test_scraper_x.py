@@ -226,7 +226,7 @@ class TestScraperXBootstrap:
         mock_page.on.side_effect = _capture_callback
 
         import asyncio
-        results = asyncio.get_event_loop().run_until_complete(scraper.scrape(ScrapeMode.BOOTSTRAP))
+        results = asyncio.run(scraper.scrape(ScrapeMode.BOOTSTRAP))
         assert len(results) == 3
         assert all(bm.source == Source.X for bm in results)
 

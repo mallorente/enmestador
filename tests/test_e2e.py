@@ -58,7 +58,7 @@ def _make_enriched(bookmark: Bookmark, content: ExtractedContent | None = None) 
 def _mock_auth():
     mock_auth = AsyncMock()
     mock_context = MagicMock()
-    mock_context.new_page = AsyncMock(return_value=MagicMock())
+    mock_context.new_page = AsyncMock(return_value=AsyncMock())
     mock_auth.context = mock_context
     mock_auth.ensure_browser = AsyncMock()
     mock_auth.close = AsyncMock()
@@ -194,14 +194,16 @@ async def test_external_article_extraction_e2e(tmp_path: Path) -> None:
         post_text="Interesting take on AI",
     )
 
+    # full_text must be ≥200 chars to pass the pipeline's external-article length filter
+    _LONG_TEXT = "A" * 210
     ext_content_x = ExtractedContent(
         url="https://example.com/external-article",
-        full_text="Full text of the external article about Python.",
+        full_text=f"Full text of the external article about Python. {_LONG_TEXT}",
         extraction_method="trafilatura",
     )
     li_content = ExtractedContent(
         url="https://linkedin.com/posts/jane-789",
-        full_text="Full article content about AI trends.",
+        full_text=f"Full article content about AI trends. {_LONG_TEXT}",
         post_text="Interesting take on AI",
         extraction_method="trafilatura",
     )
@@ -221,6 +223,9 @@ async def test_external_article_extraction_e2e(tmp_path: Path) -> None:
             patch("main.ScraperLinkedIn") as MockScraperLI,
             patch("main.LLMProcessor") as MockLLM,
             patch("main.web_extract", new_callable=AsyncMock) as mock_extract,
+            patch("main.extract_with_playwright", new_callable=AsyncMock, return_value=None),
+            patch("main.extract_linkedin_post", new_callable=AsyncMock, return_value=(None, [])),
+            patch("main.extract_x_thread", new_callable=AsyncMock, return_value=None),
             patch("main.Notifier") as MockNotifier,
         ):
             MockScraperX.return_value.scrape = AsyncMock(return_value=[bm_x])

@@ -237,17 +237,27 @@ class TestBookmarkFromLinkedinPost:
         assert bm.saved_at is not None
 
 
+def _make_js_drain_side_effect(body: str | None = None):
+    """Return an evaluate side_effect that simulates JS-captured LinkedIn API responses.
+
+    Returns the captured body on the first drain call, [] on subsequent drains,
+    and None for scroll/other evaluate calls.
+    """
+    call_count = {"n": 0}
+
+    async def _side_effect(script, *args, **kwargs):
+        if "__li_responses" in str(script):
+            if body is not None and call_count["n"] == 0:
+                call_count["n"] += 1
+                return [{"url": "https://www.linkedin.com/voyager/api/savedItems", "body": body, "status": 200}]
+            return []
+        return None
+
+    return _side_effect
+
+
 class TestScraperLinkedInApiSuccess:
     """ScraperLinkedIn tests: API interception success path."""
-
-    @pytest.fixture
-    def mock_page(self) -> AsyncMock:
-        page = AsyncMock()
-        page.goto = AsyncMock()
-        page.wait_for_timeout = AsyncMock()
-        page.evaluate = AsyncMock()
-        page.on = MagicMock()
-        return page
 
     @pytest.fixture
     def tmp_state(self, tmp_path: Path) -> Path:
@@ -255,67 +265,52 @@ class TestScraperLinkedInApiSuccess:
         state_dir.mkdir()
         return state_dir
 
-    def _simulate_api_response(self, mock_page: AsyncMock, body: str) -> None:
-        """Trigger the registered response callback with a mock API response."""
-        call_args = mock_page.on.call_args
-        assert call_args is not None
-        callback = call_args[0][1]
+    def _make_mock_page(self, body: str) -> AsyncMock:
+        page = AsyncMock()
+        page.goto = AsyncMock()
+        page.wait_for_timeout = AsyncMock()
+        page.on = MagicMock()
+        page.evaluate = AsyncMock(side_effect=_make_js_drain_side_effect(body))
+        return page
 
-        mock_response = MagicMock()
-        mock_response.url = "https://www.linkedin.com/voyager/api/feed/recommendedEntities"
-        mock_response.text = AsyncMock(return_value=body)
-        callback(mock_response)
-
-    def test_api_interception_success(self, mock_page: AsyncMock, tmp_state: Path) -> None:
+    def test_api_interception_success(self, tmp_state: Path) -> None:
         """API interception captures posts successfully."""
+        import asyncio
+
         posts_data = [
             {"text": "Post 1", "url": "https://www.linkedin.com/feed/update/1"},
             {"text": "Post 2", "url": "https://www.linkedin.com/feed/update/2"},
         ]
         body = _make_linkedin_api_body(posts_data, next_cursor=None)
+        scraper = ScraperLinkedIn(self._make_mock_page(body), tmp_state)
 
-        def _capture_callback(*args, **kwargs):
-            if args[0] == "response":
-                callback = args[1]
-                mock_response = MagicMock()
-                mock_response.url = "https://www.linkedin.com/voyager/api/feed/recommendedEntities"
-                mock_response.text = AsyncMock(return_value=body)
-                callback(mock_response)
-
-        mock_page.on.side_effect = _capture_callback
-
-        scraper = ScraperLinkedIn(mock_page, tmp_state)
-
-        import asyncio
-        results = asyncio.get_event_loop().run_until_complete(scraper.scrape(ScrapeMode.BOOTSTRAP))
+        results = asyncio.run(scraper.scrape(ScrapeMode.BOOTSTRAP))
         assert len(results) == 2
         assert all(bm.source == Source.LINKEDIN for bm in results)
 
-    def test_api_interception_empty_triggers_fallback(
-        self, mock_page: AsyncMock, tmp_state: Path
-    ) -> None:
+    def test_api_interception_empty_triggers_fallback(self, tmp_state: Path) -> None:
         """Empty API response triggers DOM fallback (simulated)."""
-        body = _make_linkedin_api_body_empty()
+        import asyncio
 
-        def _capture_callback(*args, **kwargs):
-            if args[0] == "response":
-                callback = args[1]
-                mock_response = MagicMock()
-                mock_response.url = "https://www.linkedin.com/voyager/api/feed/recommendedEntities"
-                mock_response.text = AsyncMock(return_value=body)
-                callback(mock_response)
+        mock_page = AsyncMock()
+        mock_page.goto = AsyncMock()
+        mock_page.wait_for_timeout = AsyncMock()
+        mock_page.on = MagicMock()
 
-        mock_page.on.side_effect = _capture_callback
+        async def _evaluate(script, *args, **kwargs):
+            if "__li_responses" in str(script):
+                return []  # No JS-captured posts → triggers DOM fallback
+            return None  # Scroll and DOM extract calls → _extract_posts_from_dom returns []
 
+        mock_page.evaluate = AsyncMock(side_effect=_evaluate)
         scraper = ScraperLinkedIn(mock_page, tmp_state)
 
-        import asyncio
-        results = asyncio.get_event_loop().run_until_complete(scraper.scrape(ScrapeMode.BOOTSTRAP))
-        # DOM fallback will return empty since evaluate mock returns None
+        results = asyncio.run(scraper.scrape(ScrapeMode.BOOTSTRAP))
         assert results == []
 
-    def test_skip_processed_urls(self, mock_page: AsyncMock, tmp_state: Path) -> None:
+    def test_skip_processed_urls(self, tmp_state: Path) -> None:
         """API interception: skip URLs already in processed_urls store."""
+        import asyncio
         from pipeline.state import ProcessedUrlStore
 
         store = ProcessedUrlStore(tmp_state)
@@ -326,21 +321,9 @@ class TestScraperLinkedInApiSuccess:
             {"text": "New post", "url": "https://www.linkedin.com/feed/update/2"},
         ]
         body = _make_linkedin_api_body(posts_data, next_cursor=None)
+        scraper = ScraperLinkedIn(self._make_mock_page(body), tmp_state)
 
-        def _capture_callback(*args, **kwargs):
-            if args[0] == "response":
-                callback = args[1]
-                mock_response = MagicMock()
-                mock_response.url = "https://www.linkedin.com/voyager/api/feed/recommendedEntities"
-                mock_response.text = AsyncMock(return_value=body)
-                callback(mock_response)
-
-        mock_page.on.side_effect = _capture_callback
-
-        scraper = ScraperLinkedIn(mock_page, tmp_state)
-
-        import asyncio
-        results = asyncio.get_event_loop().run_until_complete(scraper.scrape(ScrapeMode.BOOTSTRAP))
+        results = asyncio.run(scraper.scrape(ScrapeMode.BOOTSTRAP))
         assert len(results) == 1
         assert str(results[0].url) == "https://www.linkedin.com/feed/update/2"
 
@@ -355,18 +338,23 @@ class TestScraperLinkedInDomFallback:
         return state_dir
 
     def test_dom_fallback_returns_empty_on_evaluate_none(self, tmp_state: Path) -> None:
-        """DOM fallback: returns empty list when evaluate returns None."""
+        """DOM fallback: returns empty list when JS capture and DOM both yield nothing."""
         import asyncio
 
         mock_page = AsyncMock()
         mock_page.goto = AsyncMock()
         mock_page.wait_for_timeout = AsyncMock()
-        mock_page.evaluate = AsyncMock(return_value=None)
         mock_page.on = MagicMock()
 
+        async def _evaluate(script, *args, **kwargs):
+            if "__li_responses" in str(script):
+                return []  # No JS-captured posts → triggers DOM fallback
+            return None  # DOM extract → _extract_posts_from_dom returns []
+
+        mock_page.evaluate = AsyncMock(side_effect=_evaluate)
         scraper = ScraperLinkedIn(mock_page, tmp_state)
 
-        results = asyncio.get_event_loop().run_until_complete(scraper.scrape(ScrapeMode.BOOTSTRAP))
+        results = asyncio.run(scraper.scrape(ScrapeMode.BOOTSTRAP))
         assert results == []
 
     def test_dom_fallback_parses_dom_posts(self, tmp_state: Path) -> None:
@@ -385,12 +373,19 @@ class TestScraperLinkedInDomFallback:
         mock_page = AsyncMock()
         mock_page.goto = AsyncMock()
         mock_page.wait_for_timeout = AsyncMock()
-        mock_page.evaluate = AsyncMock(return_value=dom_posts)
         mock_page.on = MagicMock()
 
+        async def _evaluate(script, *args, **kwargs):
+            if "__li_responses" in str(script):
+                return []  # No JS posts → triggers DOM fallback
+            if "window.scrollBy" in str(script):
+                return None  # Scroll calls
+            return dom_posts  # DOM extract calls
+
+        mock_page.evaluate = AsyncMock(side_effect=_evaluate)
         scraper = ScraperLinkedIn(mock_page, tmp_state)
 
-        results = asyncio.get_event_loop().run_until_complete(scraper.scrape(ScrapeMode.BOOTSTRAP))
+        results = asyncio.run(scraper.scrape(ScrapeMode.BOOTSTRAP))
         assert len(results) == 1
         assert results[0].source == Source.LINKEDIN
         assert results[0].post_text == "DOM scraped post"
@@ -450,26 +445,13 @@ class TestApiDeduplication:
             {"text": "Same post", "url": "https://www.linkedin.com/feed/update/1"},
             {"text": "Same post again", "url": "https://www.linkedin.com/feed/update/1"},
         ]
-        # Two identical URLs — only one should appear
         body = _make_linkedin_api_body(posts_data, next_cursor=None)
-
-        def _capture_callback(*args, **kwargs):
-            if args[0] == "response":
-                callback = args[1]
-                mock_response = MagicMock()
-                mock_response.url = "https://www.linkedin.com/voyager/api/feed/recommendedEntities"
-                mock_response.text = AsyncMock(return_value=body)
-                callback(mock_response)
-
-        mock_page.on.side_effect = _capture_callback
+        mock_page.evaluate = AsyncMock(side_effect=_make_js_drain_side_effect(body))
 
         scraper = ScraperLinkedIn(mock_page, tmp_state)
 
-        results = asyncio.get_event_loop().run_until_complete(scraper.scrape(ScrapeMode.BOOTSTRAP))
-        # _parse_linkedin_api_response returns both raw dicts, but _seen_urls
-        # deduplicates during _wait_for_api_results
+        results = asyncio.run(scraper.scrape(ScrapeMode.BOOTSTRAP))
         url_set = {str(r.url) for r in results}
-        # At most 1 unique URL
         assert len(url_set) <= 1
 
 
@@ -487,7 +469,7 @@ class TestSearchDashClusters:
                                 "items": [
                                     {
                                         "navigationUrl": "https://www.linkedin.com/feed/update/abc123",
-                                        "text": "Great article on testing",
+                                        "commentary": {"text": "Great article on testing"},
                                         "author": {"name": "Test Author"},
                                     },
                                 ],
@@ -573,97 +555,64 @@ class TestApiPagination:
     """Tests for LinkedIn API pagination via scrolling."""
 
     @pytest.fixture
-    def mock_page(self) -> AsyncMock:
-        page = AsyncMock()
-        page.goto = AsyncMock()
-        page.wait_for_timeout = AsyncMock()
-        page.evaluate = AsyncMock()
-        page.on = MagicMock()
-        return page
-
-    @pytest.fixture
     def tmp_state(self, tmp_path: Path) -> Path:
         state_dir = tmp_path / "state"
         state_dir.mkdir()
         return state_dir
 
-    def test_pagination_stops_at_max_posts(
-        self, mock_page: AsyncMock, tmp_state: Path
-    ) -> None:
+    def _make_page(self, side_effect) -> AsyncMock:
+        page = AsyncMock()
+        page.goto = AsyncMock()
+        page.wait_for_timeout = AsyncMock()
+        page.on = MagicMock()
+        page.evaluate = AsyncMock(side_effect=side_effect)
+        return page
+
+    def test_pagination_stops_at_max_posts(self, tmp_state: Path) -> None:
         """Pagination stops when max_posts is reached."""
         import asyncio
 
-        # Create 10 posts but set max_posts to 3
         posts_data = [
             {"text": f"Post {i}", "url": f"https://www.linkedin.com/feed/update/{i}"}
             for i in range(10)
         ]
         body = _make_linkedin_api_body(posts_data, next_cursor=None)
+        scraper = ScraperLinkedIn(self._make_page(_make_js_drain_side_effect(body)), tmp_state, max_posts=3)
 
-        def _capture_callback(*args, **kwargs):
-            if args[0] == "response":
-                callback = args[1]
-                mock_response = MagicMock()
-                mock_response.url = "https://www.linkedin.com/voyager/api/savedItems"
-                mock_response.text = AsyncMock(return_value=body)
-                callback(mock_response)
-
-        mock_page.on.side_effect = _capture_callback
-
-        scraper = ScraperLinkedIn(mock_page, tmp_state, max_posts=3)
-
-        results = asyncio.get_event_loop().run_until_complete(
-            scraper.scrape(ScrapeMode.BOOTSTRAP)
-        )
+        results = asyncio.run(scraper.scrape(ScrapeMode.BOOTSTRAP))
         assert len(results) == 3
 
-    def test_pagination_scroll_triggers_more_posts(
-        self, mock_page: AsyncMock, tmp_state: Path
-    ) -> None:
+    def test_pagination_scroll_triggers_more_posts(self, tmp_state: Path) -> None:
         """After initial API capture, scroll triggers more responses."""
         import asyncio
 
-        # First batch: 2 posts
         batch1 = _make_linkedin_api_body(
             [{"text": "Post 1", "url": "https://www.linkedin.com/feed/update/1"},
              {"text": "Post 2", "url": "https://www.linkedin.com/feed/update/2"}],
             next_cursor="page2",
         )
-        # Second batch: 2 more posts (different URLs)
         batch2 = _make_linkedin_api_body(
             [{"text": "Post 3", "url": "https://www.linkedin.com/feed/update/3"},
              {"text": "Post 4", "url": "https://www.linkedin.com/feed/update/4"}],
             next_cursor=None,
         )
+        drain_count = {"n": 0}
 
-        call_count = 0
+        async def _evaluate(script, *args, **kwargs):
+            if "__li_responses" in str(script):
+                drain_count["n"] += 1
+                if drain_count["n"] == 1:
+                    return [{"url": "https://www.linkedin.com/voyager/api/savedItems", "body": batch1, "status": 200}]
+                if drain_count["n"] == 2:
+                    return [{"url": "https://www.linkedin.com/voyager/api/savedItems", "body": batch2, "status": 200}]
+                return []
+            return None
 
-        def _capture_callback(*args, **kwargs):
-            nonlocal call_count
-            if args[0] == "response":
-                callback = args[1]
-                mock_response = MagicMock()
-                mock_response.url = "https://www.linkedin.com/voyager/api/savedItems"
-                if call_count == 0:
-                    mock_response.text = AsyncMock(return_value=batch1)
-                    call_count += 1
-                else:
-                    mock_response.text = AsyncMock(return_value=batch2)
-                callback(mock_response)
-
-        mock_page.on.side_effect = _capture_callback
-
-        scraper = ScraperLinkedIn(mock_page, tmp_state)
-
-        results = asyncio.get_event_loop().run_until_complete(
-            scraper.scrape(ScrapeMode.BOOTSTRAP)
-        )
-        # Should capture all unique posts from both batches
+        scraper = ScraperLinkedIn(self._make_page(_evaluate), tmp_state)
+        results = asyncio.run(scraper.scrape(ScrapeMode.BOOTSTRAP))
         assert len(results) >= 2
 
-    def test_pagination_stops_when_no_new_posts(
-        self, mock_page: AsyncMock, tmp_state: Path
-    ) -> None:
+    def test_pagination_stops_when_no_new_posts(self, tmp_state: Path) -> None:
         """Pagination stops after consecutive scrolls with no new posts."""
         import asyncio
 
@@ -671,22 +620,9 @@ class TestApiPagination:
             [{"text": "Only post", "url": "https://www.linkedin.com/feed/update/1"}],
             next_cursor=None,
         )
+        scraper = ScraperLinkedIn(self._make_page(_make_js_drain_side_effect(body)), tmp_state)
 
-        def _capture_callback(*args, **kwargs):
-            if args[0] == "response":
-                callback = args[1]
-                mock_response = MagicMock()
-                mock_response.url = "https://www.linkedin.com/voyager/api/savedItems"
-                mock_response.text = AsyncMock(return_value=body)
-                callback(mock_response)
-
-        mock_page.on.side_effect = _capture_callback
-
-        scraper = ScraperLinkedIn(mock_page, tmp_state)
-
-        results = asyncio.get_event_loop().run_until_complete(
-            scraper.scrape(ScrapeMode.BOOTSTRAP)
-        )
+        results = asyncio.run(scraper.scrape(ScrapeMode.BOOTSTRAP))
         assert len(results) == 1
 
 

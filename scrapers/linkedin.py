@@ -11,7 +11,7 @@ import random
 from datetime import UTC, datetime
 from pathlib import Path
 
-from patchright.async_api import Page, Response
+from patchright.async_api import Page
 
 from models import Bookmark, ScrapeMode, Source
 from pipeline.state import ProcessedUrlStore
@@ -436,8 +436,7 @@ class ScraperLinkedIn:
         self.processed = ProcessedUrlStore(state_dir)
         self._api_posts: list[dict] = []
         self._api_cursor: str | None = None
-        self._captured_responses: list[Response] = []
-        self._seen_urls: set[str] = set()  # track URLs to avoid duplicates
+        self._seen_urls: set[str] = set()
 
     async def scrape(self, mode: ScrapeMode) -> list[Bookmark]:
         """Scrape saved posts from LinkedIn.
@@ -475,7 +474,7 @@ class ScraperLinkedIn:
         except Exception as e:
             logger.warning("Could not take LinkedIn screenshot: %s", e)
 
-        # Phase 1: wait for initial API responses
+        # Phase 1: wait for initial API responses (JS wrapper populates window.__li_responses)
         initial_timeout = API_TIMEOUT_SECONDS * 1000
         check_interval = 2000
         elapsed = 0
@@ -485,7 +484,7 @@ class ScraperLinkedIn:
             await self.page.wait_for_timeout(check_interval)
             elapsed += check_interval
 
-            await self._process_responses_async()
+            await self._drain_js_responses()
 
             if self._api_posts:
                 initial_found = True
@@ -516,8 +515,7 @@ class ScraperLinkedIn:
             await self.page.wait_for_timeout(scroll_wait)
             pagination_elapsed += scroll_wait
 
-            # Process any new API responses
-            await self._process_responses_async()
+            await self._drain_js_responses()
 
             current_count = len(self._api_posts)
             if current_count == previous_count:
@@ -549,46 +547,85 @@ class ScraperLinkedIn:
         logger.info("LinkedIn scraper complete: %d bookmarks (from %d raw posts)", len(results), len(self._api_posts))
         return results
 
+    _JS_INTERCEPT = """
+    (() => {
+        if (window.__li_intercept_installed) return;
+        window.__li_intercept_installed = true;
+        window.__li_responses = [];
+
+        const PATTERNS = ['/voyager/', '/saved-items/', '/bookmark'];
+        function isLiApi(url) {
+            return url && PATTERNS.some(p => url.includes(p));
+        }
+
+        // Wrap fetch — clone body before returning to caller
+        const _origFetch = window.fetch.bind(window);
+        window.fetch = function(input, init) {
+            const url = (typeof input === 'string') ? input : (input && input.url) || '';
+            return _origFetch(input, init).then(function(response) {
+                if (isLiApi(url)) {
+                    const clone = response.clone();
+                    clone.text().then(function(body) {
+                        window.__li_responses.push({url: url, status: response.status, body: body});
+                    }).catch(function() {});
+                }
+                return response;
+            });
+        };
+
+        // Wrap XHR
+        const _OrigXHR = window.XMLHttpRequest;
+        function PatchedXHR() {
+            const xhr = new _OrigXHR();
+            let _url = '';
+            const _origOpen = xhr.open.bind(xhr);
+            xhr.open = function(method, url) {
+                _url = url || '';
+                return _origOpen.apply(xhr, arguments);
+            };
+            xhr.addEventListener('load', function() {
+                if (isLiApi(_url)) {
+                    try {
+                        window.__li_responses.push({
+                            url: _url, status: xhr.status, body: xhr.responseText
+                        });
+                    } catch(e) {}
+                }
+            });
+            return xhr;
+        }
+        PatchedXHR.prototype = _OrigXHR.prototype;
+        window.XMLHttpRequest = PatchedXHR;
+    })();
+    """
+
     async def _setup_api_interception(self) -> None:
-        """Set up response interception for LinkedIn API calls.
+        """Inject JS fetch/XHR wrapper that captures LinkedIn API responses.
 
-        Captures Response objects for later async processing
-        (response.body() is async and can't be called from sync callback).
+        JS-level capture reads the body before Chrome evicts it from the CDP
+        resource cache, which happens within seconds of the response arriving.
+        Captured responses are stored in window.__li_responses and drained by
+        _drain_js_responses() during the scrape loop.
         """
+        await self.page.add_init_script(self._JS_INTERCEPT)
 
-        def _on_response(response: Response) -> None:
-            url = response.url
-            # Broad match: any Voyager or saved-items URL
-            is_api = (
-                any(pattern in url for pattern in LINKEDIN_API_PATTERNS)
-                or LINKEDIN_VOYAGER_PATTERN in url
+    async def _drain_js_responses(self) -> None:
+        """Read and clear window.__li_responses, parsing any LinkedIn posts found."""
+        try:
+            captured = await self.page.evaluate(
+                "() => { const r = window.__li_responses || []; window.__li_responses = []; return r; }"
             )
-            if is_api:
-                logger.info("CAPTURED LinkedIn: %s [status=%s]", url[:200], response.status)
-                self._captured_responses.append(response)
-            elif "linkedin" in url.lower() and response.status == 200:
-                # Log non-API LinkedIn responses at debug level for diagnostics
-                if any(kw in url.lower() for kw in ["graphql", "voyager", "api", "saved", "feed"]):
-                    logger.debug("LinkedIn response (non-match): %s [status=%s]", url[:200], response.status)
+        except Exception as exc:
+            logger.warning("Failed to drain JS responses: %s", exc)
+            return
 
-        self.page.on("response", _on_response)
-
-    async def _process_responses_async(self) -> None:
-        """Process captured API responses (async), extracting posts and cursors.
-
-        Called during the scrape loop after each scroll/wait cycle.
-        Reads response bodies with await and parses them.
-        """
-        new_responses = self._captured_responses[:]
-        self._captured_responses.clear()
-
-        for response in new_responses:
-            try:
-                body = await response.text()
-            except Exception as exc:
-                logger.warning("Failed to read LinkedIn response body from %s: %s", response.url[:80], exc)
+        for item in captured:
+            url = item.get("url", "")
+            body = item.get("body", "")
+            status = item.get("status", 0)
+            if not body:
                 continue
-
+            logger.info("CAPTURED LinkedIn: %s [status=%s]", url[:200], status)
             posts, cursor = _parse_linkedin_api_response(body)
             if posts:
                 for post in posts:
@@ -596,12 +633,9 @@ class ScraperLinkedIn:
                     if post_url and post_url not in self._seen_urls:
                         self._api_posts.append(post)
                         self._seen_urls.add(post_url)
-                logger.info("Parsed %d posts from API response (total: %d)", len(posts), len(self._api_posts))
+                logger.info("Parsed %d posts from JS capture (total: %d)", len(posts), len(self._api_posts))
             else:
-                logger.warning(
-                    "LinkedIn API response yielded 0 posts from %s (body preview: %.500s)",
-                    response.url[:80], body,
-                )
+                logger.debug("JS capture yielded 0 posts from %s (preview: %.300s)", url[:80], body)
             if cursor:
                 self._api_cursor = cursor
 
