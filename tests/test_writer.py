@@ -1,5 +1,6 @@
 """Tests for the writer module."""
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -56,7 +57,9 @@ def test_frontmatter_with_enrichment() -> None:
         source=Source.X,
         url="https://example.com/article",
         title="Test Article",
+        published_at=datetime(2026, 5, 13, 1, 0, 0, tzinfo=UTC),
         saved_at=datetime(2026, 5, 13, 2, 0, 0, tzinfo=UTC),
+        retrieved_at=datetime(2026, 5, 13, 3, 0, 0, tzinfo=UTC),
     )
     content = ExtractedContent(
         url=bookmark.url,
@@ -77,6 +80,9 @@ def test_frontmatter_with_enrichment() -> None:
     assert parsed["title"] == "Test Article"
     assert parsed["source"] == "x"
     assert parsed["url"] == "https://example.com/article"
+    assert parsed["published"] == "2026-05-13T01:00:00+00:00"
+    assert parsed["saved"] == "2026-05-13T02:00:00+00:00"
+    assert parsed["retrieved"] == "2026-05-13T03:00:00+00:00"
     assert parsed["tags"] == ["python", "architecture"]
     assert parsed["model"] == "deepseek-v4-pro"
 
@@ -115,6 +121,44 @@ def test_frontmatter_no_saved_at() -> None:
     fm = _build_frontmatter(enriched)
     parsed = yaml.safe_load(fm)
     assert "saved" not in parsed
+    assert "retrieved" in parsed
+
+
+def test_frontmatter_with_images() -> None:
+    bookmark = Bookmark(
+        source=Source.X,
+        url="https://x.com/user/status/1",
+        title="Post with image",
+        image_urls=["https://pbs.twimg.com/media/example.jpg"],
+    )
+    content = ExtractedContent(
+        url=bookmark.url,
+        post_text="text",
+        extraction_method="tweet_text",
+    )
+    enriched = EnrichedBookmark(bookmark=bookmark, content=content, enrichment=None)
+
+    parsed = yaml.safe_load(_build_frontmatter(enriched))
+    assert parsed["image_urls"] == ["https://pbs.twimg.com/media/example.jpg"]
+
+
+def test_frontmatter_with_referenced_tweets() -> None:
+    bookmark = Bookmark(
+        source=Source.X,
+        url="https://x.com/user/status/1",
+        title="Post with referenced tweet",
+        referenced_tweet_urls=["https://x.com/other/status/2"],
+    )
+    content = ExtractedContent(
+        url=bookmark.url,
+        post_text="text",
+        extraction_method="tweet_text",
+        referenced_tweet_urls=bookmark.referenced_tweet_urls,
+    )
+    enriched = EnrichedBookmark(bookmark=bookmark, content=content, enrichment=None)
+
+    parsed = yaml.safe_load(_build_frontmatter(enriched))
+    assert parsed["referenced_tweet_urls"] == ["https://x.com/other/status/2"]
 
 
 # --- _build_body ---
@@ -170,6 +214,46 @@ def test_body_with_article_text() -> None:
     assert "Full article text here" in body
 
 
+def test_body_with_x_thread_text() -> None:
+    bookmark = Bookmark(
+        source=Source.X,
+        url="https://x.com/user/status/123",
+        title="Thread",
+        post_text="First tweet",
+    )
+    content = ExtractedContent(
+        url=bookmark.url,
+        full_text="First tweet\n\n---\n\nSecond tweet",
+        post_text="First tweet",
+        extraction_method="playwright_x_thread",
+    )
+    enriched = EnrichedBookmark(bookmark=bookmark, content=content, enrichment=None)
+
+    body = _build_body(enriched)
+    assert "## Original" in body
+    assert "## Thread" in body
+    assert "Second tweet" in body
+
+
+def test_body_with_images() -> None:
+    bookmark = Bookmark(
+        source=Source.LINKEDIN,
+        url="https://linkedin.com/feed/update/1",
+        title="Post image",
+        image_urls=["https://media.licdn.com/post-image.jpg"],
+    )
+    content = ExtractedContent(
+        url=bookmark.url,
+        post_text="Post text",
+        extraction_method="post_only",
+    )
+    enriched = EnrichedBookmark(bookmark=bookmark, content=content, enrichment=None)
+
+    body = _build_body(enriched)
+    assert "## Images" in body
+    assert "![](https://media.licdn.com/post-image.jpg)" in body
+
+
 def test_body_no_enrichment_no_article() -> None:
     bookmark = Bookmark(
         source=Source.X,
@@ -197,7 +281,12 @@ def test_body_with_external_articles() -> None:
         external_urls=["https://example.com/article1", "https://example.com/article2"],
     )
     articles = [
-        ExternalArticle(url="https://example.com/article1", text="Article 1 content here", extraction_method="trafilatura"),
+        ExternalArticle(
+            url="https://example.com/article1",
+            text="Article 1 content here",
+            image_urls=["https://example.com/hero.jpg"],
+            extraction_method="trafilatura",
+        ),
         ExternalArticle(url="https://example.com/article2", text=None, extraction_method="failed"),
     ]
     content = ExtractedContent(
@@ -212,9 +301,37 @@ def test_body_with_external_articles() -> None:
     body = _build_body(enriched)
     assert "## Article: https://example.com/article1" in body
     assert "Article 1 content here" in body
+    assert "![](https://example.com/hero.jpg)" in body
     assert "## Article: https://example.com/article2" in body
     assert "(Extraction failed" in body
     assert "## Links" not in body
+
+
+def test_body_with_referenced_tweet_content() -> None:
+    bookmark = Bookmark(
+        source=Source.X,
+        url="https://x.com/main/status/1",
+        title="Post with reference",
+        referenced_tweet_urls=["https://x.com/other/status/2"],
+    )
+    content = ExtractedContent(
+        url=bookmark.url,
+        post_text="See referenced tweet",
+        extraction_method="tweet_text",
+        referenced_tweet_urls=bookmark.referenced_tweet_urls,
+        external_articles=[
+            ExternalArticle(
+                url="https://x.com/other/status/2",
+                text="Referenced tweet\n\n---\n\nThread continuation",
+                extraction_method="playwright_x_thread",
+            )
+        ],
+    )
+    enriched = EnrichedBookmark(bookmark=bookmark, content=content, enrichment=None)
+
+    body = _build_body(enriched)
+    assert "## Referenced Tweet: https://x.com/other/status/2" in body
+    assert "Thread continuation" in body
 
 
 def test_body_with_external_urls_no_articles_backward_compat() -> None:
@@ -258,8 +375,13 @@ def test_writer_creates_file(tmp_path: Path) -> None:
 
     result = writer.write(enriched)
     assert result.exists()
-    assert result.name == "my-article.md"
+    assert result.name.startswith("my-article-")
+    assert result.suffix == ".md"
     assert result.parent.name == "x"
+    sidecar = result.with_suffix(".json")
+    assert sidecar.exists()
+    data = json.loads(sidecar.read_text())
+    assert data["bookmark"]["url"] == "https://example.com/article"
 
 
 def test_writer_valid_yaml_frontmatter(tmp_path: Path) -> None:
@@ -296,7 +418,7 @@ def test_writer_valid_yaml_frontmatter(tmp_path: Path) -> None:
     assert fm["source"] == "x"
 
 
-def test_writer_collision_appends(tmp_path: Path) -> None:
+def test_writer_collision_creates_separate_notes(tmp_path: Path) -> None:
     output_dir = tmp_path / "output"
     writer = Writer(output_dir)
     bookmark1 = Bookmark(
@@ -314,14 +436,18 @@ def test_writer_collision_appends(tmp_path: Path) -> None:
     enriched1 = EnrichedBookmark(bookmark=bookmark1, content=content1, enrichment=None)
     enriched2 = EnrichedBookmark(bookmark=bookmark2, content=content2, enrichment=None)
 
-    writer.write(enriched1)
-    writer.write(enriched2)
+    path1 = writer.write(enriched1)
+    path2 = writer.write(enriched2)
 
-    filepath = output_dir / "x" / "same-title.md"
-    text = filepath.read_text()
-    assert "First" in text
-    assert "Second" in text
-    assert text.count("---") >= 3
+    assert path1 != path2
+    assert path1.name.startswith("same-title-")
+    assert path2.name.startswith("same-title-")
+    assert "First" in path1.read_text()
+    assert "Second" in path2.read_text()
+    assert "Second" not in path1.read_text()
+    assert "First" not in path2.read_text()
+    assert path1.with_suffix(".json").exists()
+    assert path2.with_suffix(".json").exists()
 
 
 def test_writer_creates_output_dir(tmp_path: Path) -> None:
@@ -354,7 +480,8 @@ def test_writer_organizes_by_source_x(tmp_path: Path) -> None:
     result = writer.write(enriched)
     assert result.exists()
     assert result.parent.name == "x"
-    assert result.name == "test-tweet.md"
+    assert result.name.startswith("test-tweet-")
+    assert result.suffix == ".md"
 
 
 def test_writer_organizes_by_source_linkedin(tmp_path: Path) -> None:
@@ -367,7 +494,8 @@ def test_writer_organizes_by_source_linkedin(tmp_path: Path) -> None:
     result = writer.write(enriched)
     assert result.exists()
     assert result.parent.name == "linkedin"
-    assert result.name == "test-post.md"
+    assert result.name.startswith("test-post-")
+    assert result.suffix == ".md"
 
 
 def test_writer_collision_across_sources(tmp_path: Path) -> None:

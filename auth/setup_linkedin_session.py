@@ -34,6 +34,55 @@ _CHROME_UA = (
     "Chrome/132.0.0.0 Safari/537.36"
 )
 
+# Must match AuthManager._STEALTH_INIT_SCRIPT exactly to avoid fingerprint mismatch
+_STEALTH_INIT_SCRIPT = """
+(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    Object.defineProperty(navigator, 'plugins', {
+        get: () => {
+            const arr = [
+                { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+                { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+                { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+            ];
+            arr.refresh = () => {};
+            arr.item = (i) => arr[i];
+            arr.namedItem = (n) => arr.find(p => p.name === n) || null;
+            Object.defineProperty(arr, 'length', { get: () => 3 });
+            return arr;
+        }
+    });
+    Object.defineProperty(navigator, 'languages', { get: () => ['es-ES', 'es', 'en-US', 'en'] });
+    Object.defineProperty(navigator, 'platform', { get: () => 'Linux x86_64' });
+    if (!window.chrome) {
+        window.chrome = { runtime: {}, loadTimes: () => ({}), csi: () => ({}) };
+    }
+    if (navigator.permissions && navigator.permissions.query) {
+        const _origQuery = navigator.permissions.query.bind(navigator.permissions);
+        navigator.permissions.query = (params) => {
+            if (params.name === 'notifications') {
+                return Promise.resolve({ state: 'prompt', onchange: null });
+            }
+            return _origQuery(params);
+        };
+    }
+    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+})();
+"""
+
+_LAUNCH_ARGS = [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-infobars",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--use-gl=swiftshader",
+    "--disable-blink-features=AutomationControlled",
+    "--disable-features=IsolateOrigins,site-per-process",
+]
+
 
 def _load_cookie_editor_json(path: Path) -> list[dict]:
     """Parse Cookie-Editor JSON export into Playwright cookie dicts."""
@@ -82,13 +131,14 @@ async def _setup(cookies_file: Path, user_data_dir: Path) -> bool:
         ctx = await p.chromium.launch_persistent_context(
             user_data_dir=str(user_data_dir),
             headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+            args=_LAUNCH_ARGS,
             viewport={"width": 1280, "height": 800},
             user_agent=_CHROME_UA,
             locale="es-ES",
             timezone_id="Europe/Madrid",
         )
 
+        await ctx.add_init_script(_STEALTH_INIT_SCRIPT)
         await ctx.add_cookies(cookies)
         logger.info("Cookies written to profile")
 

@@ -55,6 +55,31 @@ def test_read_json_corrupted_returns_default(tmp_path: Path) -> None:
     assert result == {"recovered": True}
 
 
+def test_normalize_url_canonicalizes_linkedin_update_urn_from_query() -> None:
+    url = (
+        "https://www.linkedin.com/feed/update/?"
+        "updateEntityUrn=urn%3Ali%3Aactivity%3A7464554351244558336"
+        "&trackingId=abc"
+    )
+
+    assert normalize_url(url) == (
+        "https://www.linkedin.com/feed/update/"
+        "urn:li:activity:7464554351244558336"
+    )
+
+
+def test_normalize_url_canonicalizes_linkedin_posts_activity_slug() -> None:
+    url = (
+        "https://www.linkedin.com/posts/example_author-title-"
+        "activity-7464554351244558336-abcd?utm_source=share"
+    )
+
+    assert normalize_url(url) == (
+        "https://www.linkedin.com/feed/update/"
+        "urn:li:activity:7464554351244558336"
+    )
+
+
 # --- CursorsStore ---
 
 

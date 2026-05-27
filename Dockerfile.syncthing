@@ -1,0 +1,17 @@
+FROM debian:trixie-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends syncthing ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -u 1000 -m -d /home/syncthing syncthing \
+    && mkdir -p /config /data/bookmarks \
+    && chown -R syncthing:syncthing /config /data /home/syncthing
+
+USER syncthing
+
+EXPOSE 8384 22000/tcp 22000/udp 21027/udp
+
+CMD ["syncthing", "--home=/config", "--gui-address=0.0.0.0:8384", "--no-browser", "--no-restart"]

@@ -1,8 +1,23 @@
 """Shared test fixtures for the PKM ingestion pipeline."""
 
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def mock_x_auth_manager():
+    """Keep orchestrator tests off the real X browser manager by default."""
+    with patch("main.XAuthManager") as MockXAuth:
+        mock_x_auth = AsyncMock()
+        mock_context = MagicMock()
+        mock_context.new_page = AsyncMock(return_value=MagicMock())
+        mock_x_auth.context = mock_context
+        mock_x_auth.ensure_browser = AsyncMock()
+        mock_x_auth.close = AsyncMock()
+        MockXAuth.return_value = mock_x_auth
+        yield MockXAuth
 
 
 @pytest.fixture

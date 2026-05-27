@@ -293,7 +293,7 @@ def test_healthcheck_healthy(monkeypatch, tmp_path):
 
     path_map = {
         "/app/volumes/state": state_dir,
-        "/app/volumes/obsidian_output": output_dir,
+        "/app/volumes/llm_wiki_seed/Bookmarks/bookmarks": output_dir,
         "/app/volumes/user_data": user_data_dir,
     }
 
@@ -318,7 +318,7 @@ def test_healthcheck_missing_dir(monkeypatch, tmp_path):
 
     path_map = {
         "/app/volumes/state": state_dir,
-        "/app/volumes/obsidian_output": output_dir,
+        "/app/volumes/llm_wiki_seed/Bookmarks/bookmarks": output_dir,
         "/app/volumes/user_data": tmp_path / "user_data",
     }
 
@@ -347,7 +347,7 @@ def test_healthcheck_locked(monkeypatch, tmp_path):
 
     path_map = {
         "/app/volumes/state": state_dir,
-        "/app/volumes/obsidian_output": output_dir,
+        "/app/volumes/llm_wiki_seed/Bookmarks/bookmarks": output_dir,
         "/app/volumes/user_data": user_data_dir,
     }
 

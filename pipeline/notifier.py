@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 from datetime import UTC, datetime
 
 import httpx
@@ -11,6 +12,41 @@ from models import PipelineResult
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_API = "https://api.telegram.org"
+_TELEGRAM_BOT_TOKEN_RE = re.compile(r"/bot[^/\s]+/sendMessage")
+_HTTPX_REDACTION_FILTER_INSTALLED = False
+
+
+def _redact_telegram_bot_tokens(value: object) -> object:
+    """Redact Telegram bot tokens from log-record values."""
+    if isinstance(value, str):
+        return _TELEGRAM_BOT_TOKEN_RE.sub("/bot<redacted>/sendMessage", value)
+    return value
+
+
+class _TelegramTokenRedactionFilter(logging.Filter):
+    """Redact Telegram bot tokens from httpx/httpcore records."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = _redact_telegram_bot_tokens(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(_redact_telegram_bot_tokens(arg) for arg in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {
+                key: _redact_telegram_bot_tokens(value)
+                for key, value in record.args.items()
+            }
+        return True
+
+
+def _install_httpx_redaction_filter() -> None:
+    """Install once so Telegram tokens cannot leak through httpx request logs."""
+    global _HTTPX_REDACTION_FILTER_INSTALLED
+    if _HTTPX_REDACTION_FILTER_INSTALLED:
+        return
+    redaction_filter = _TelegramTokenRedactionFilter()
+    logging.getLogger("httpx").addFilter(redaction_filter)
+    logging.getLogger("httpcore").addFilter(redaction_filter)
+    _HTTPX_REDACTION_FILTER_INSTALLED = True
 
 
 class Notifier:
@@ -21,6 +57,7 @@ class Notifier:
     """
 
     def __init__(self) -> None:
+        _install_httpx_redaction_filter()
         self._token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         self._chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
         self._client = httpx.AsyncClient(timeout=10.0)

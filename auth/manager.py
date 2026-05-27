@@ -97,6 +97,11 @@ class AuthManager:
             return self._context
 
         self.user_data_dir.mkdir(parents=True, exist_ok=True)
+        for lock in self.user_data_dir.glob("Singleton*"):
+            try:
+                lock.unlink()
+            except OSError:
+                pass
         logger.info(
             "Launching browser (profile: %s, headless=%s, slow_mo=%d)",
             self.user_data_dir, self._headless, self._slow_mo,
@@ -109,6 +114,8 @@ class AuthManager:
             "--disable-setuid-sandbox",
             "--disable-infobars",
             "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--use-gl=swiftshader",
             "--disable-blink-features=AutomationControlled",
             "--disable-features=IsolateOrigins,site-per-process",
         ]

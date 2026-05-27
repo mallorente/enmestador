@@ -41,10 +41,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    from main import configure_logging
+    configure_logging()
 
     interval_sec = args.interval_hours * 3600
     logger.info("[scheduler] Started — interval=%.1fh", args.interval_hours)

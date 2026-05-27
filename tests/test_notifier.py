@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from models import PipelineResult
-from pipeline.notifier import Notifier
+from pipeline.notifier import Notifier, _redact_telegram_bot_tokens
 
 
 def _make_response(status_code: int, text: str = "OK") -> httpx.Response:
@@ -53,6 +53,12 @@ def test_disabled_when_only_chat_id() -> None:
     with patch.dict("os.environ", {"TELEGRAM_CHAT_ID": "-100"}, clear=True):
         notifier = Notifier()
         assert notifier._disabled is True
+
+
+def test_redacts_telegram_bot_token_from_logged_urls() -> None:
+    url = "https://api.telegram.org/bot123456:ABC-DEF/sendMessage"
+
+    assert _redact_telegram_bot_tokens(url) == "https://api.telegram.org/bot<redacted>/sendMessage"
 
 
 # --- send() — alert ---

@@ -1,4 +1,38 @@
 services:
+  # Interactive auth: launches Chrome via VNC so you can log in manually.
+  # Usage:
+  #   docker compose --profile auth up auth
+  # Then SSH-tunnel: ssh -L 5900:localhost:5900 <server>
+  # Connect with any VNC client to localhost:5900 (no password).
+  # Complete the login/challenge in the browser window that appears.
+  # Set AUTH_PLATFORM=x, linkedin, or both (default: x).
+  auth:
+    profiles: [auth]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      bash -c "
+        rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 &&
+        Xtigervnc :99 -rfbport 5910 -SecurityTypes None -geometry 1280x800 -depth 24 -ac -localhost no 2>/tmp/vnc.log &
+        for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do test -S /tmp/.X11-unix/X99 && break; sleep 0.5; done &&
+        test -S /tmp/.X11-unix/X99 || (cat /tmp/vnc.log && exit 1) &&
+        ln -sf /usr/share/novnc/vnc.html /usr/share/novnc/index.html &&
+        websockify --web /usr/share/novnc 6080 localhost:5910 &
+        sleep 1 &&
+        env DISPLAY=:99 HEADLESS=false python auth/cookie_refresher.py --platform $${AUTH_PLATFORM:-x} --user-data-dir /app/volumes/user_data --timeout 3600
+      "
+    volumes:
+      - ./volumes/user_data:/app/volumes/user_data
+      - ./volumes/state:/app/volumes/state
+    environment:
+      - USER_DATA_DIR=/app/volumes/user_data
+      - AUTH_PLATFORM=${AUTH_PLATFORM:-x}
+      - DISPLAY=:99
+      - HEADLESS=false
+    ports:
+      - "6080:6080"
+
   # One-shot pipeline run — only starts with `docker compose run --rm pipeline`
   # or `docker compose --profile run up`. Never auto-starts with plain `up`.
   pipeline:
@@ -6,17 +40,20 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    command: >
+      bash -c "Xtigervnc :99 -rfbport 5999 -SecurityTypes None -geometry 1280x800 -depth 24 -ac -localhost no 2>/dev/null & sleep 2 && DISPLAY=:99 python main.py"
     env_file:
       - .env
     volumes:
       - ./volumes/user_data:/app/volumes/user_data
       - ./volumes/state:/app/volumes/state
-      - ./volumes/obsidian_output:/app/volumes/obsidian_output
-      - ./volumes/obsidian_output_full:/app/volumes/obsidian_output_full
+      - ./volumes/llm_wiki_seed:/app/volumes/llm_wiki_seed
     environment:
       - USER_DATA_DIR=/app/volumes/user_data
       - STATE_DIR=/app/volumes/state
-      - OUTPUT_DIR=/app/volumes/obsidian_output
+      - OUTPUT_DIR=/app/volumes/llm_wiki_seed/Bookmarks/bookmarks
+      - DISPLAY=:99
+      - HEADLESS=false
       - FETCH_TIMEOUT=30.0
       - FETCH_MAX_RETRIES=3
       - FETCH_BACKOFF_BASE=1.0
@@ -35,23 +72,26 @@ services:
       start_period: 10s
     restart: "no"
 
-  # Long-running scheduler: runs the pipeline every 6h, restarts on crash.
+  # Long-running scheduler: runs the pipeline every 6h by default, restarts on crash.
   # Start with: docker compose up -d scheduler
   scheduler:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["python", "scheduler.py", "--interval-hours", "6"]
+    command: >
+      bash -c "Xtigervnc :99 -rfbport 5999 -SecurityTypes None -geometry 1280x800 -depth 24 -ac -localhost no 2>/dev/null & sleep 2 && DISPLAY=:99 python scheduler.py --interval-hours $${SCHEDULER_INTERVAL_HOURS:-6}"
     env_file:
       - .env
     volumes:
       - ./volumes/user_data:/app/volumes/user_data
       - ./volumes/state:/app/volumes/state
-      - ./volumes/obsidian_output:/app/volumes/obsidian_output
+      - ./volumes/llm_wiki_seed:/app/volumes/llm_wiki_seed
     environment:
       - USER_DATA_DIR=/app/volumes/user_data
       - STATE_DIR=/app/volumes/state
-      - OUTPUT_DIR=/app/volumes/obsidian_output
+      - OUTPUT_DIR=/app/volumes/llm_wiki_seed/Bookmarks/bookmarks
+      - DISPLAY=:99
+      - HEADLESS=false
       - FETCH_TIMEOUT=30.0
       - FETCH_MAX_RETRIES=3
       - FETCH_BACKOFF_BASE=1.0
@@ -62,4 +102,19 @@ services:
       - LLM_MAX_RETRIES=3
       - LLM_RATE_LIMIT_SEC=1.0
       - LOCK_STALE_HOURS=4.0
+    restart: unless-stopped
+
+  syncthing:
+    build:
+      context: .
+      dockerfile: Dockerfile.syncthing
+    container_name: enmestador-syncthing
+    volumes:
+      - ./volumes/syncthing_config:/config
+      - ./volumes/llm_wiki_seed:/data/llm_wiki_seed
+    ports:
+      - "8384:8384"
+      - "22000:22000/tcp"
+      - "22000:22000/udp"
+      - "21027:21027/udp"
     restart: unless-stopped

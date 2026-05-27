@@ -1,11 +1,13 @@
 import os
 
 DEFAULT_STATE_DIR = os.getenv("STATE_DIR", "state")
-DEFAULT_OUTPUT_DIR = os.getenv("OUTPUT_DIR", "obsidian_output")
+DEFAULT_OUTPUT_DIR = os.getenv("OUTPUT_DIR", "volumes/llm_wiki_seed/Bookmarks/bookmarks")
 DEFAULT_USER_DATA_DIR = os.getenv("USER_DATA_DIR", "volumes/user_data")
 MAX_BOOKMARKS_PER_SOURCE = int(os.getenv("MAX_BOOKMARKS", "500"))
 MAX_EXTERNAL_ARTICLES = int(os.getenv("MAX_EXTERNAL_ARTICLES", "3"))
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "3"))
+DELTA_STOP_AFTER_KNOWN = int(os.getenv("DELTA_STOP_AFTER_KNOWN", "2"))
+DELTA_FRONTIER_SIZE = int(os.getenv("DELTA_FRONTIER_SIZE", "20"))
 
 FETCH_TIMEOUT = float(os.getenv("FETCH_TIMEOUT", "30.0"))
 FETCH_MAX_RETRIES = int(os.getenv("FETCH_MAX_RETRIES", "3"))

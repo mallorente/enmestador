@@ -4,7 +4,7 @@ from pathlib import Path
 
 def healthcheck():
     state_dir = Path("/app/volumes/state")
-    output_dir = Path("/app/volumes/obsidian_output")
+    output_dir = Path("/app/volumes/llm_wiki_seed/Bookmarks/bookmarks")
     user_data_dir = Path("/app/volumes/user_data")
 
     for d in [state_dir, output_dir, user_data_dir]:

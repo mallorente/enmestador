@@ -39,6 +39,11 @@ class TestBookmark:
         assert str(bm.url) == "https://example.com/article"
         assert bm.title == "Test Article"
 
+    def test_bookmark_can_store_images(self, sample_bookmark_data):
+        sample_bookmark_data["image_urls"] = ["https://example.com/image.jpg"]
+        bm = Bookmark(**sample_bookmark_data)
+        assert bm.image_urls == ["https://example.com/image.jpg"]
+
     def test_bookmark_json_roundtrip(self, sample_bookmark_data):
         bm = Bookmark(**sample_bookmark_data)
         serialized = bm.model_dump_json()
@@ -55,6 +60,8 @@ class TestBookmark:
         )
         assert bm.post_text is None
         assert bm.saved_at is None
+        assert bm.published_at is None
+        assert bm.retrieved_at is not None
 
     def test_invalid_url_rejected(self, sample_bookmark_data):
         sample_bookmark_data["url"] = "not-a-url"
@@ -74,8 +81,10 @@ class TestExtractedContent:
             full_text="The full article text here.",
             post_text="Shared post text",
             extraction_method="trafilatura",
+            image_urls=["https://example.com/hero.jpg"],
         )
         assert ec.extraction_method == "trafilatura"
+        assert ec.image_urls == ["https://example.com/hero.jpg"]
         assert ec.extracted_at is not None
 
     def test_post_only_extraction(self):

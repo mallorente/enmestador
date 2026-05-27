@@ -203,6 +203,7 @@ async def _extract_from_page(
         full_text=text[:MAX_CONTENT_LENGTH],
         post_text=post_text,
         extraction_method="playwright",
+        image_urls=await _extract_image_urls_from_page(page),
         extracted_at=datetime.now(UTC),
     )
 
@@ -317,6 +318,7 @@ async def _extract_linkedin_content(
         full_text=text[:MAX_CONTENT_LENGTH],
         post_text=post_text,
         extraction_method="playwright_linkedin",
+        image_urls=await _extract_image_urls_from_page(page),
         extracted_at=datetime.now(UTC),
     )
 
@@ -404,6 +406,7 @@ async def extract_x_thread(
             full_text=full_text[:MAX_CONTENT_LENGTH],
             post_text=post_text,
             extraction_method="playwright_x_thread",
+            image_urls=await _extract_image_urls_from_page(page),
             extracted_at=datetime.now(UTC),
         )
     except Exception:
@@ -597,6 +600,58 @@ async def _extract_linkedin_external_urls(page: Page) -> list[str]:
         return urls or []
     except Exception:
         logger.warning("LinkedIn external URL extraction failed")
+        return []
+
+
+async def _extract_image_urls_from_page(page: Page) -> list[str]:
+    """Extract useful article/post image URLs from the current page."""
+    try:
+        urls = await page.evaluate(
+            """() => {
+                const seen = new Set();
+                const results = [];
+                const skip = [
+                    'profile_images',
+                    'profile-displayphoto',
+                    'emoji',
+                    'avatar',
+                    'logo',
+                    'icon',
+                    'sprite',
+                ];
+
+                function add(url) {
+                    if (!url || !url.startsWith('http')) return;
+                    const lower = url.toLowerCase();
+                    if (skip.some(marker => lower.includes(marker))) return;
+                    if (!(
+                        lower.includes('.jpg') ||
+                        lower.includes('.jpeg') ||
+                        lower.includes('.png') ||
+                        lower.includes('.webp') ||
+                        lower.includes('pbs.twimg.com/media') ||
+                        lower.includes('media.licdn.com')
+                    )) return;
+                    if (!seen.has(url)) {
+                        seen.add(url);
+                        results.push(url);
+                    }
+                }
+
+                document.querySelectorAll('article img[src], main img[src], [role="main"] img[src]').forEach(img => {
+                    add(img.currentSrc || img.src);
+                });
+
+                document.querySelectorAll('meta[property="og:image"], meta[name="twitter:image"]').forEach(meta => {
+                    add(meta.getAttribute('content') || '');
+                });
+
+                return results.slice(0, 20);
+            }"""
+        )
+        return urls if isinstance(urls, list) else []
+    except Exception:
+        logger.debug("Image extraction failed", exc_info=True)
         return []
 
 

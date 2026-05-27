@@ -1,26 +1,35 @@
 """Writer module for the PKM ingestion pipeline.
 
-Writes enriched bookmarks as Markdown files with YAML frontmatter
-organized into subdirectories by source. Handles filename sanitization
-and collision detection (append-on-collision within same source).
+Writes enriched bookmarks as Markdown files with YAML frontmatter and JSON
+sidecars organized into subdirectories by source. Handles filename sanitization
+and collision detection.
 """
 
 import re
+from hashlib import sha1
 from pathlib import Path
 
 import yaml
 
-from models import EnrichedBookmark
+from models import Bookmark, EnrichedBookmark, Source
 
 # Characters safe for filenames (ASCII alphanumeric, hyphen, underscore, space)
 _SAFE_FILENAME_RE = re.compile(r"[^a-zA-Z0-9 _-]")
 
 # YAML frontmatter keys in order
-_FRONTMATTER_KEYS = ["title", "source", "url", "saved", "tags", "model", "external_urls"]
-
-# Separator for collision appends
-_COLLAPSE_SEPARATOR = "\n\n---\n\n"
-
+_FRONTMATTER_KEYS = [
+    "title",
+    "source",
+    "url",
+    "published",
+    "saved",
+    "retrieved",
+    "tags",
+    "model",
+    "external_urls",
+    "referenced_tweet_urls",
+    "image_urls",
+]
 
 def _sanitize_filename(title: str) -> str:
     """Convert a title to a filesystem-safe filename.
@@ -42,6 +51,27 @@ def _sanitize_filename(title: str) -> str:
     return name + ".md"
 
 
+def _bookmark_id(bookmark: Bookmark) -> str:
+    """Return a stable, filename-safe identifier for one source bookmark."""
+    url = str(bookmark.url).rstrip("/")
+    if bookmark.source == Source.X:
+        match = re.search(r"/status/(\d+)", url)
+        if match:
+            return match.group(1)
+    if bookmark.source == Source.LINKEDIN:
+        match = re.search(r"(?:activity:|activity-)(\d+)", url)
+        if match:
+            return match.group(1)
+
+    return sha1(url.encode("utf-8")).hexdigest()[:10]
+
+
+def _bookmark_filename(bookmark: Bookmark) -> str:
+    """Build the Markdown filename for a bookmark note."""
+    stem = _sanitize_filename(bookmark.title).removesuffix(".md")
+    return f"{stem}-{_bookmark_id(bookmark)}.md"
+
+
 def _build_frontmatter(enriched: EnrichedBookmark) -> str:
     """Build YAML frontmatter from an enriched bookmark."""
     bookmark = enriched.bookmark
@@ -50,8 +80,11 @@ def _build_frontmatter(enriched: EnrichedBookmark) -> str:
         "source": bookmark.source.value,
         "url": str(bookmark.url),
     }
+    if bookmark.published_at:
+        fm["published"] = bookmark.published_at.isoformat()
     if bookmark.saved_at:
         fm["saved"] = bookmark.saved_at.isoformat()
+    fm["retrieved"] = bookmark.retrieved_at.isoformat()
     if enriched.enrichment:
         fm["tags"] = enriched.enrichment.tags
         fm["model"] = enriched.enrichment.model_used
@@ -60,6 +93,11 @@ def _build_frontmatter(enriched: EnrichedBookmark) -> str:
         fm["model"] = "none"
     if bookmark.external_urls:
         fm["external_urls"] = bookmark.external_urls
+    if bookmark.referenced_tweet_urls:
+        fm["referenced_tweet_urls"] = bookmark.referenced_tweet_urls
+    image_urls = bookmark.image_urls or enriched.content.image_urls
+    if image_urls:
+        fm["image_urls"] = image_urls
 
     return yaml.dump(fm, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
@@ -82,19 +120,41 @@ def _build_body(enriched: EnrichedBookmark) -> str:
         lines.append(content.post_text)
         lines.append("")
 
-    # External article text (from web extraction, NOT from X.com error pages)
-    if content.full_text and content.extraction_method == "trafilatura":
-        lines.append("## Article Text\n")
+    # Full extracted post/thread/article text.
+    if content.full_text and content.full_text.strip() != (content.post_text or "").strip():
+        if content.extraction_method == "playwright_x_thread":
+            heading = "## Thread"
+        elif content.extraction_method in {"trafilatura", "playwright", "playwright_linkedin"}:
+            heading = "## Article Text"
+        else:
+            heading = "## Extracted Text"
+        lines.append(f"{heading}\n")
         lines.append(content.full_text)
+        lines.append("")
+
+    image_urls = enriched.bookmark.image_urls or content.image_urls
+    if image_urls:
+        lines.append("## Images\n")
+        for url in image_urls:
+            lines.append(f"![]({url})")
         lines.append("")
 
     # External articles (clipped content from tweet links)
     if content.external_articles:
         for article in content.external_articles:
-            lines.append(f"## Article: {article.url}\n")
+            if article.extraction_method == "playwright_x_thread":
+                heading = "Referenced Tweet"
+            else:
+                heading = "Article"
+            lines.append(f"## {heading}: {article.url}\n")
             if article.text:
                 lines.append(article.text[:8000])
                 lines.append("")
+                if article.image_urls:
+                    lines.append("### Images\n")
+                    for url in article.image_urls:
+                        lines.append(f"![]({url})")
+                    lines.append("")
             else:
                 lines.append("(Extraction failed — see Links section)\n")
 
@@ -110,33 +170,30 @@ def _build_body(enriched: EnrichedBookmark) -> str:
 
 
 class Writer:
-    """Write enriched bookmarks as Obsidian-ready Markdown files."""
+    """Write enriched bookmarks as Obsidian-ready Markdown plus JSON sidecars."""
 
     def __init__(self, output_dir: Path) -> None:
         self.output_dir = output_dir
 
     def write(self, enriched: EnrichedBookmark) -> Path:
-        """Write an enriched bookmark to a .md file.
+        """Write an enriched bookmark to a .md file and a matching .json file.
 
         Returns the path to the written file.
-        Appends to existing file on collision within same source.
+        Each source bookmark gets its own deterministic note file.
         """
         source = enriched.bookmark.source.value
         source_dir = self.output_dir / source
         source_dir.mkdir(parents=True, exist_ok=True)
-        filename = _sanitize_filename(enriched.bookmark.title)
+        filename = _bookmark_filename(enriched.bookmark)
         filepath = source_dir / filename
 
         frontmatter = _build_frontmatter(enriched)
         body = _build_body(enriched)
         content = f"---\n{frontmatter}---\n\n{body}"
 
-        if filepath.exists():
-            # Collision: append with separator
-            existing = filepath.read_text(encoding="utf-8")
-            new_content = f"{existing}{_COLLAPSE_SEPARATOR}{content}"
-            filepath.write_text(new_content, encoding="utf-8")
-        else:
-            filepath.write_text(content, encoding="utf-8")
+        filepath.write_text(content, encoding="utf-8")
+
+        json_path = filepath.with_suffix(".json")
+        json_path.write_text(enriched.model_dump_json(indent=2), encoding="utf-8")
 
         return filepath

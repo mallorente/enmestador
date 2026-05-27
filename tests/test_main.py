@@ -180,6 +180,48 @@ async def test_full_pipeline_with_mocks(tmp_path: Path) -> None:
     assert str(bm.url) in data.get("urls", {})
 
 
+@pytest.mark.asyncio
+async def test_x_empty_candidates_with_authenticated_bookmarks_response_skips_auth_expiry_notice(tmp_path: Path) -> None:
+    """An authenticated empty X scrape should not trigger auth-expired notifications."""
+    state_dir = tmp_path / "state"
+    output_dir = tmp_path / "output"
+    user_data_dir = tmp_path / "user_data"
+    state_dir.mkdir()
+
+    with patch("main.DEFAULT_STATE_DIR", str(state_dir)):
+        with patch("main.DEFAULT_OUTPUT_DIR", str(output_dir)):
+            with patch("main.DEFAULT_USER_DATA_DIR", str(user_data_dir)):
+                with patch("main.XAuthManager") as MockXAuth:
+                    mock_x_auth = AsyncMock()
+                    mock_x_context = MagicMock()
+                    mock_x_context.new_page = AsyncMock(return_value=MagicMock())
+                    mock_x_auth.context = mock_x_context
+                    mock_x_auth.ensure_browser = AsyncMock()
+                    mock_x_auth.close = AsyncMock()
+                    MockXAuth.return_value = mock_x_auth
+
+                    with patch("main.ScraperX") as MockScraperX:
+                        mock_scraper = MockScraperX.return_value
+                        mock_scraper.scrape = AsyncMock(return_value=[])
+                        mock_scraper.saw_authenticated_bookmarks_endpoint = True
+                        mock_scraper.boundary.recent_urls = []
+
+                        with patch("main._check_x_auth", new_callable=AsyncMock) as mock_check_x_auth:
+                            with patch("main.Notifier") as MockNotifier:
+                                mock_notifier = AsyncMock()
+                                mock_notifier.send_summary = AsyncMock(return_value=True)
+                                mock_notifier.send_auth_expired = AsyncMock(return_value=True)
+                                MockNotifier.return_value = mock_notifier
+
+                                from main import run_pipeline
+
+                                result = await run_pipeline(sources={Source.X})
+
+    assert result.processed == 0
+    mock_check_x_auth.assert_not_awaited()
+    mock_notifier.send_auth_expired.assert_not_awaited()
+
+
 # --- Single bookmark failure doesn't abort pipeline ---
 
 
@@ -673,6 +715,102 @@ async def test_dedup_skips_processed_urls(tmp_path: Path) -> None:
     # The bookmark should have been skipped (deduplicated)
     assert result.processed == 0
     assert result.enriched == 0
+
+
+@pytest.mark.asyncio
+async def test_source_filter_runs_only_selected_scraper(tmp_path: Path) -> None:
+    """A source-filtered run should not scrape or advance the other source."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    with patch("main.DEFAULT_STATE_DIR", str(state_dir)):
+        with patch("main.DEFAULT_OUTPUT_DIR", str(tmp_path / "output")):
+            with patch("main.DEFAULT_USER_DATA_DIR", str(tmp_path / "user_data")):
+                with patch("main.AuthManager") as MockAuth:
+                    mock_auth = AsyncMock()
+                    mock_context = MagicMock()
+                    mock_context.new_page = AsyncMock(return_value=MagicMock())
+                    mock_auth.context = mock_context
+                    mock_auth.ensure_browser = AsyncMock()
+                    mock_auth.close = AsyncMock()
+                    MockAuth.return_value = mock_auth
+
+                    with patch("main.ScraperX") as MockScraperX:
+                        MockScraperX.return_value.scrape = AsyncMock(return_value=[])
+                        with patch("main.ScraperLinkedIn") as MockScraperLI:
+                            MockScraperLI.return_value.scrape = AsyncMock(return_value=[])
+                            with patch("main.Notifier") as MockNotifier:
+                                mock_notifier = AsyncMock()
+                                mock_notifier.send_summary = AsyncMock(return_value=True)
+                                MockNotifier.return_value = mock_notifier
+
+                                from main import run_pipeline
+
+                                await run_pipeline(sources={Source.X}, delta_only=True)
+
+    MockScraperX.return_value.scrape.assert_awaited_once()
+    MockScraperLI.return_value.scrape.assert_not_called()
+    cursors = json.loads((state_dir / "cursors.json").read_text())
+    assert "x" in cursors
+    assert "linkedin" not in cursors
+
+
+@pytest.mark.asyncio
+async def test_dry_run_reports_without_writes_or_cursor_updates(tmp_path: Path) -> None:
+    """Dry run reports deduped would-process count without mutating state."""
+    state_dir = tmp_path / "state"
+    output_dir = tmp_path / "output"
+    user_data_dir = tmp_path / "user_data"
+    state_dir.mkdir()
+    processed_file = state_dir / "processed_urls.json"
+    processed_file.write_text(json.dumps({
+        "urls": {
+            "https://example.com/already": {
+                "first_seen": "2026-05-10T00:00:00Z",
+                "source": "x",
+            }
+        }
+    }))
+    bm_existing = _make_bookmark(url="https://example.com/already")
+    bm_new = _make_bookmark(url="https://example.com/new")
+
+    with patch("main.DEFAULT_STATE_DIR", str(state_dir)):
+        with patch("main.DEFAULT_OUTPUT_DIR", str(output_dir)):
+            with patch("main.DEFAULT_USER_DATA_DIR", str(user_data_dir)):
+                with patch("main.AuthManager") as MockAuth:
+                    mock_auth = AsyncMock()
+                    mock_context = MagicMock()
+                    mock_context.new_page = AsyncMock(return_value=MagicMock())
+                    mock_auth.context = mock_context
+                    mock_auth.ensure_browser = AsyncMock()
+                    mock_auth.close = AsyncMock()
+                    MockAuth.return_value = mock_auth
+
+                    with patch("main.ScraperX") as MockScraperX:
+                        MockScraperX.return_value.scrape = AsyncMock(return_value=[bm_existing, bm_new])
+                        MockScraperX.return_value.last_cursor = "cursor-after-dry-run"
+                        with patch("main.ScraperLinkedIn") as MockScraperLI:
+                            MockScraperLI.return_value.scrape = AsyncMock(return_value=[])
+                            with patch("main.LLMProcessor") as MockLLM:
+                                with patch("main.Notifier") as MockNotifier:
+                                    mock_notifier = AsyncMock()
+                                    MockNotifier.return_value = mock_notifier
+
+                                    from main import run_pipeline
+
+                                    result = await run_pipeline(
+                                        sources={Source.X},
+                                        delta_only=True,
+                                        dry_run=True,
+                                    )
+
+    assert result.processed == 1
+    assert result.enriched == 0
+    assert result.new_cursor_x == "cursor-after-dry-run"
+    MockLLM.assert_not_called()
+    mock_notifier.send_summary.assert_not_called()
+    assert not (state_dir / "cursors.json").exists()
+    assert not output_dir.exists()
 
 
 # --- External article extraction (web clipper for X bookmarks) ---
@@ -1242,3 +1380,22 @@ async def test_max_concurrent_env_var(tmp_path: Path) -> None:
                                             result = await run_pipeline()
 
     assert result.processed == 3
+
+
+def test_is_vault_bookmarks_dir_detects_obsidian_vault(tmp_path: Path) -> None:
+    from main import _is_vault_bookmarks_dir
+
+    output_dir = tmp_path / "Bookmarks" / "bookmarks"
+    output_dir.mkdir(parents=True)
+    (output_dir.parent / ".obsidian").mkdir()
+
+    assert _is_vault_bookmarks_dir(output_dir) is True
+
+
+def test_is_vault_bookmarks_dir_rejects_non_vault_output(tmp_path: Path) -> None:
+    from main import _is_vault_bookmarks_dir
+
+    output_dir = tmp_path / "output" / "bookmarks"
+    output_dir.mkdir(parents=True)
+
+    assert _is_vault_bookmarks_dir(output_dir) is False

@@ -28,7 +28,11 @@ class Bookmark(BaseModel):
     title: str
     post_text: str | None = None
     external_urls: list[str] | None = None
+    referenced_tweet_urls: list[str] | None = None
+    image_urls: list[str] | None = None
+    published_at: datetime | None = None
     saved_at: datetime | None = None
+    retrieved_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class ExternalArticle(BaseModel):
@@ -36,6 +40,7 @@ class ExternalArticle(BaseModel):
 
     url: str
     text: str | None = None
+    image_urls: list[str] | None = None
     extraction_method: str = "trafilatura"
 
 
@@ -47,7 +52,9 @@ class ExtractedContent(BaseModel):
     post_text: str | None = None
     extraction_method: str  # "trafilatura" | "post_only" | "tweet_text"
     external_urls: list[str] | None = None
+    referenced_tweet_urls: list[str] | None = None
     external_articles: list[ExternalArticle] | None = None
+    image_urls: list[str] | None = None
     extracted_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

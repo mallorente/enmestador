@@ -6,6 +6,7 @@ into a temp directory so we can inspect the output.
 """
 
 import json
+import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -108,6 +109,8 @@ async def test_5x5_bookmarks_pipeline(tmp_path: Path) -> None:
     output_dir = OUTPUT_DIR
     user_data_dir = tmp_path / "user_data"
     state_dir.mkdir()
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     all_bookmarks = X_BOOKMARKS + LI_BOOKMARKS

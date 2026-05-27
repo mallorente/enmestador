@@ -11,6 +11,7 @@ from scrapers.linkedin import (
     LINKEDIN_API_PATTERNS,
     LINKEDIN_VOYAGER_PATTERN,
     ScraperLinkedIn,
+    _extract_image_urls_from_post,
     _bookmark_from_linkedin_post,
     _extract_post_from_element,
     _parse_linkedin_api_response,
@@ -131,6 +132,25 @@ class TestExtractPostFromElement:
         assert result["text"] == "Great article on architecture"
         assert result["author"] == "Jane Doe"
 
+    def test_extracts_image_urls_from_element(self) -> None:
+        element = {
+            "content": {
+                "data": {
+                    "url": "/feed/update/123",
+                    "text": "Post with image",
+                    "image": {
+                        "url": "https://media.licdn.com/dms/image/example.jpg",
+                    },
+                },
+            },
+        }
+        assert _extract_image_urls_from_post(element) == [
+            "https://media.licdn.com/dms/image/example.jpg"
+        ]
+        result = _extract_post_from_element(element)
+        assert result is not None
+        assert result["image_urls"] == ["https://media.licdn.com/dms/image/example.jpg"]
+
     def test_normalizes_relative_url(self) -> None:
         element = {
             "content": {
@@ -201,6 +221,24 @@ class TestBookmarkFromLinkedinPost:
         assert bm.post_text == "Architecture matters more than frameworks"
         assert "Architecture" in bm.title
 
+    def test_canonicalizes_linkedin_url_variants(self) -> None:
+        raw = {
+            "url": (
+                "https://www.linkedin.com/posts/example_author-title-"
+                "activity-7464554351244558336-abcd?utm_source=share"
+            ),
+            "text": "Same LinkedIn post",
+            "author": "Author",
+        }
+
+        bm = _bookmark_from_linkedin_post(raw)
+
+        assert bm is not None
+        assert str(bm.url) == (
+            "https://www.linkedin.com/feed/update/"
+            "urn:li:activity:7464554351244558336"
+        )
+
     def test_handles_missing_text(self) -> None:
         raw = {
             "url": "https://www.linkedin.com/feed/update/xyz",
@@ -224,7 +262,8 @@ class TestBookmarkFromLinkedinPost:
         }
         bm = _bookmark_from_linkedin_post(raw)
         assert bm is not None
-        assert bm.saved_at is not None
+        assert bm.published_at is not None
+        assert bm.saved_at is None
 
     def test_parses_unix_timestamp(self) -> None:
         raw = {
@@ -234,7 +273,40 @@ class TestBookmarkFromLinkedinPost:
         }
         bm = _bookmark_from_linkedin_post(raw)
         assert bm is not None
+        assert bm.published_at is not None
+
+    def test_parses_saved_timestamp_separately(self) -> None:
+        raw = {
+            "url": "https://www.linkedin.com/feed/update/789",
+            "text": "Saved time",
+            "created_at": "2026-05-13T01:00:00Z",
+            "saved_at": "2026-05-14T02:00:00Z",
+        }
+        bm = _bookmark_from_linkedin_post(raw)
+        assert bm is not None
+        assert bm.published_at is not None
         assert bm.saved_at is not None
+        assert bm.saved_at.isoformat() == "2026-05-14T02:00:00+00:00"
+
+    def test_converts_image_urls(self) -> None:
+        raw = {
+            "url": "https://www.linkedin.com/feed/update/with-image",
+            "text": "Image post",
+            "image_urls": ["https://media.licdn.com/dms/image/example.jpg"],
+        }
+        bm = _bookmark_from_linkedin_post(raw)
+        assert bm is not None
+        assert bm.image_urls == ["https://media.licdn.com/dms/image/example.jpg"]
+
+    def test_parses_relative_timestamp_approximately(self) -> None:
+        raw = {
+            "url": "https://www.linkedin.com/feed/update/relative",
+            "text": "Relative time",
+            "created_at_text": "1d",
+        }
+        bm = _bookmark_from_linkedin_post(raw)
+        assert bm is not None
+        assert bm.published_at is not None
 
 
 def _make_js_drain_side_effect(body: str | None = None):
@@ -326,6 +398,32 @@ class TestScraperLinkedInApiSuccess:
         results = asyncio.run(scraper.scrape(ScrapeMode.BOOTSTRAP))
         assert len(results) == 1
         assert str(results[0].url) == "https://www.linkedin.com/feed/update/2"
+
+    def test_can_disable_processed_url_skip(self, tmp_state: Path) -> None:
+        """Fresh historical runs can include URLs already in processed_urls."""
+        import asyncio
+        from pipeline.state import ProcessedUrlStore
+
+        store = ProcessedUrlStore(tmp_state)
+        store.add("https://www.linkedin.com/feed/update/1", "linkedin")
+
+        posts_data = [
+            {"text": "Already seen", "url": "https://www.linkedin.com/feed/update/1"},
+            {"text": "New post", "url": "https://www.linkedin.com/feed/update/2"},
+        ]
+        body = _make_linkedin_api_body(posts_data, next_cursor=None)
+        scraper = ScraperLinkedIn(
+            self._make_mock_page(body),
+            tmp_state,
+            skip_processed=False,
+        )
+
+        results = asyncio.run(scraper.scrape(ScrapeMode.BOOTSTRAP))
+        assert len(results) == 2
+        assert {str(result.url) for result in results} == {
+            "https://www.linkedin.com/feed/update/1",
+            "https://www.linkedin.com/feed/update/2",
+        }
 
 
 class TestScraperLinkedInDomFallback:
@@ -650,6 +748,82 @@ class TestCookieRefresherNoPlawright:
         assert "write_text" not in src
 
 
+class TestCookieRefresherSessionDetection:
+    """LinkedIn login detection must not accept the login form as a real session."""
+
+    def test_linkedin_login_page_is_not_real_session(self) -> None:
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from auth.cookie_refresher import _page_has_real_session
+
+        page = AsyncMock()
+        page.url = "https://www.linkedin.com/uas/login?session_redirect=https%3A%2F%2Fwww.linkedin.com%2Fmy-items%2Fsaved-posts%2F"
+        page.evaluate = AsyncMock(return_value="Iniciar sesión\nEmail o teléfono\nContraseña\nUnirse ahora")
+
+        assert asyncio.run(_page_has_real_session(page, "linkedin")) is False
+
+    def test_linkedin_saved_posts_page_is_real_session(self) -> None:
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from auth.cookie_refresher import _page_has_real_session
+
+        page = AsyncMock()
+        page.url = "https://www.linkedin.com/my-items/saved-posts/"
+        page.evaluate = AsyncMock(return_value="My Items\nSaved Posts\nMessaging\nNotifications")
+
+        assert asyncio.run(_page_has_real_session(page, "linkedin")) is True
+
+
+class TestCookieRefresherAutoLogin:
+    """Auto-login fills forms without exposing credential values."""
+
+    def test_linkedin_auto_login_fills_and_submits(self) -> None:
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from auth.cookie_refresher import _attempt_auto_login
+        from auth.credentials import Credentials
+
+        page = AsyncMock()
+        page.fill = AsyncMock()
+        page.click = AsyncMock()
+
+        asyncio.run(_attempt_auto_login(
+            page,
+            "linkedin",
+            Credentials(username="user@example.com", password="secret"),
+        ))
+
+        page.fill.assert_any_await("input#username", "user@example.com", timeout=2500)
+        page.fill.assert_any_await("input#password", "secret", timeout=2500)
+        page.click.assert_awaited()
+
+    def test_x_auto_login_fills_username_and_password(self) -> None:
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from auth.cookie_refresher import _attempt_auto_login
+        from auth.credentials import Credentials
+
+        page = AsyncMock()
+        page.fill = AsyncMock()
+        page.click = AsyncMock()
+        page.wait_for_timeout = AsyncMock()
+
+        asyncio.run(_attempt_auto_login(
+            page,
+            "x",
+            Credentials(username="x-user", password="x-secret"),
+        ))
+
+        page.fill.assert_any_await("input[autocomplete='username']", "x-user", timeout=2500)
+        page.fill.assert_any_await("input[data-testid='ocfEnterTextTextInput']", "x-user", timeout=2500)
+        page.fill.assert_any_await("input[name='password']", "x-secret", timeout=2500)
+        page.click.assert_awaited()
+
+
 class TestNoCookieInjectionAnywhere:
     """Verify cookie injection is fully removed from the codebase."""
 
@@ -695,3 +869,31 @@ class TestHumanizedScroll:
         px_vals = [_human_scroll_px() for _ in range(20)]
         assert len(set(ms_vals)) > 1, "All _human_scroll_ms() values identical — not random"
         assert len(set(px_vals)) > 1, "All _human_scroll_px() values identical — not random"
+
+
+@pytest.mark.asyncio
+async def test_dom_fallback_stops_after_known_frontier(tmp_path: Path) -> None:
+    page = AsyncMock()
+    page.keyboard = AsyncMock()
+    scraper = ScraperLinkedIn(
+        page,
+        tmp_path,
+        known_urls={
+            "https://www.linkedin.com/feed/update/old-1",
+            "https://www.linkedin.com/feed/update/old-2",
+        },
+        stop_after_known=2,
+    )
+    scraper._extract_posts_from_dom = AsyncMock(return_value=[
+        {"url": "https://www.linkedin.com/feed/update/new-1", "text": "New"},
+        {"url": "https://www.linkedin.com/feed/update/old-1", "text": "Old 1"},
+        {"url": "https://www.linkedin.com/feed/update/old-2", "text": "Old 2"},
+        {"url": "https://www.linkedin.com/feed/update/new-2", "text": "Too far"},
+    ])
+
+    results = await scraper._dom_fallback({}, set())
+
+    assert [str(bookmark.url) for bookmark in results] == [
+        "https://www.linkedin.com/feed/update/new-1"
+    ]
+    assert scraper.boundary.matched is True

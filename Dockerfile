@@ -4,7 +4,7 @@ FROM python:3.11-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Install Playwright/Patchright Chromium system dependencies
+# Install Playwright/Patchright Chromium system dependencies + VNC tools for auth
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 \
     libnspr4 \
@@ -26,6 +26,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libasound2 \
     libatspi2.0-0 \
     libwayland-client0 \
+    xvfb \
+    tigervnc-standalone-server \
+    novnc \
+    websockify \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -42,9 +46,10 @@ COPY scrapers/ scrapers/
 COPY extractors/ extractors/
 COPY auth/ auth/
 COPY pipeline/ pipeline/
+COPY scripts/ scripts/
 
 # Create volume mount points
-RUN mkdir -p /app/volumes/user_data /app/volumes/state /app/volumes/obsidian_output
+RUN mkdir -p /app/volumes/user_data /app/volumes/state /app/volumes/llm_wiki_seed/Bookmarks/bookmarks
 
 # Default command for one-shot runs. Override via docker-compose `command:`.
 CMD ["python", "main.py"]

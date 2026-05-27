@@ -8,13 +8,15 @@ scrolling and parsing.
 import logging
 import os
 import random
-from datetime import UTC, datetime
+import re
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from patchright.async_api import Page
 
 from models import Bookmark, ScrapeMode, Source
-from pipeline.state import ProcessedUrlStore
+from pipeline.frontier import KnownSequenceBoundary
+from pipeline.state import ProcessedUrlStore, normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,65 @@ def _human_scroll_ms() -> int:
 def _human_scroll_px() -> int:
     """Return a random vertical scroll amount in pixels (300–900px)."""
     return random.randint(300, 900)
+
+
+_RELATIVE_TIME_RE = re.compile(
+    r"\b(\d+)\s*(s|sec|secs|m|min|mins|h|hr|hrs|d|day|days|w|wk|wks|mo|mos|month|months|y|yr|yrs|year|years)\b",
+    re.IGNORECASE,
+)
+
+
+def _parse_datetime_value(value: object) -> datetime | None:
+    """Parse LinkedIn timestamp values into aware datetimes."""
+    if not value:
+        return None
+    try:
+        if isinstance(value, int | float):
+            seconds = value / 1000 if value > 10_000_000_000 else value
+            return datetime.fromtimestamp(seconds, tz=UTC)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return None
+            if stripped.isdigit():
+                return _parse_datetime_value(int(stripped))
+            return datetime.fromisoformat(stripped.replace("Z", "+00:00"))
+    except (ValueError, OSError):
+        return None
+    return None
+
+
+def _parse_relative_time(value: str, now: datetime | None = None) -> datetime | None:
+    """Parse visible LinkedIn relative times like '3h' or '2 days' approximately."""
+    if not value:
+        return None
+    match = _RELATIVE_TIME_RE.search(value)
+    if not match:
+        return None
+
+    amount = int(match.group(1))
+    unit = match.group(2).lower()
+    if now is None:
+        now = datetime.now(UTC)
+
+    if unit.startswith("s"):
+        delta = timedelta(seconds=amount)
+    elif unit.startswith("m") and unit not in {"mo", "mos", "month", "months"}:
+        delta = timedelta(minutes=amount)
+    elif unit.startswith("h"):
+        delta = timedelta(hours=amount)
+    elif unit.startswith("d"):
+        delta = timedelta(days=amount)
+    elif unit.startswith("w"):
+        delta = timedelta(weeks=amount)
+    elif unit in {"mo", "mos", "month", "months"}:
+        delta = timedelta(days=amount * 30)
+    elif unit.startswith("y"):
+        delta = timedelta(days=amount * 365)
+    else:
+        return None
+
+    return now - delta
 
 
 # LinkedIn API URL patterns — broader to catch current endpoints (2025-2026)
@@ -49,6 +110,9 @@ API_TIMEOUT_SECONDS = int(os.getenv("LI_API_TIMEOUT", "30"))
 
 # DOM fallback timeout: seconds of scrolling before giving up
 DOM_FALLBACK_TIMEOUT_SECONDS = int(os.getenv("LI_DOM_TIMEOUT", "60"))
+
+# Initial saved-posts page navigation timeout: seconds before retry/failure.
+GOTO_TIMEOUT_SECONDS = int(os.getenv("LI_GOTO_TIMEOUT", "180"))
 
 # Default max posts per run
 DEFAULT_MAX_POSTS = 500
@@ -192,6 +256,40 @@ def _extract_external_urls_from_post(post_data: dict) -> list[str]:
     return external
 
 
+def _extract_image_urls_from_post(post_data: dict) -> list[str]:
+    """Extract likely image URLs from nested LinkedIn post data."""
+    images: list[str] = []
+    seen: set[str] = set()
+
+    def _maybe_add(value: str) -> None:
+        if not value.startswith("http"):
+            return
+        lower = value.lower()
+        if not any(marker in lower for marker in (".jpg", ".jpeg", ".png", ".webp", "media.licdn.com", "image")):
+            return
+        if value not in seen:
+            seen.add(value)
+            images.append(value)
+
+    def _scan_value(val: object, depth: int = 0) -> None:
+        if depth > 8 or val is None:
+            return
+        if isinstance(val, str):
+            _maybe_add(val)
+        elif isinstance(val, dict):
+            for key, value in val.items():
+                if key.lower() in {"url", "rooturl", "fileidentifyingurlpathsegment", "image", "src"}:
+                    if isinstance(value, str):
+                        _maybe_add(value)
+                _scan_value(value, depth + 1)
+        elif isinstance(val, list):
+            for value in val:
+                _scan_value(value, depth + 1)
+
+    _scan_value(post_data)
+    return images
+
+
 def _extract_post_from_element(element: dict) -> dict | None:
     """Extract post data from a single LinkedIn API element.
 
@@ -220,13 +318,17 @@ def _extract_post_from_element(element: dict) -> dict | None:
                 text = ""
             author = _extract_author(element)
             created_at = element.get("createdAt") or element.get("time", "")
+            saved_at = element.get("savedAt") or element.get("savedTime") or element.get("saved_at")
             external_urls = _extract_external_urls_from_post(element)
+            image_urls = _extract_image_urls_from_post(element)
             return {
                 "url": url,
                 "text": text,
                 "author": author,
                 "created_at": created_at,
+                "saved_at": saved_at,
                 "external_urls": external_urls,
+                "image_urls": image_urls,
             }
 
         # Navigate various possible LinkedIn response shapes
@@ -301,19 +403,23 @@ def _extract_post_from_element(element: dict) -> dict | None:
 
         # Extract external URLs from the post data
         external_urls = _extract_external_urls_from_post(post_data)
+        image_urls = _extract_image_urls_from_post(post_data)
 
         # Extract author
         author = _extract_author(post_data)
 
         # Extract timestamp
         created_at = post_data.get("createdAt") or post_data.get("time", "") or post_data.get("createdTime", "")
+        saved_at = post_data.get("savedAt") or post_data.get("savedTime") or post_data.get("saved_at")
 
         return {
             "url": url,
             "text": text,
             "author": author,
             "created_at": created_at,
+            "saved_at": saved_at,
             "external_urls": external_urls,
+            "image_urls": image_urls,
         }
     except Exception:
         return None
@@ -362,17 +468,10 @@ def _bookmark_from_linkedin_post(raw: dict) -> Bookmark | None:
         text = raw.get("text", "")
         author = raw.get("author", "unknown")
 
-        # Parse created_at if available
-        saved_at: datetime | None = None
-        created_at_raw = raw.get("created_at")
-        if created_at_raw:
-            try:
-                if isinstance(created_at_raw, int | float):
-                    saved_at = datetime.fromtimestamp(created_at_raw / 1000, tz=UTC)
-                elif isinstance(created_at_raw, str):
-                    saved_at = datetime.fromisoformat(created_at_raw.replace("Z", "+00:00"))
-            except (ValueError, OSError):
-                pass
+        published_at = _parse_datetime_value(raw.get("created_at"))
+        if not published_at:
+            published_at = _parse_relative_time(str(raw.get("created_at_text") or ""))
+        saved_at = _parse_datetime_value(raw.get("saved_at"))
 
         # LinkedIn API sometimes returns text as a dict-like string
         # (e.g. "{'textDirection': 'FIRST_STRONG', 'text': 'Author Name'...}")
@@ -393,16 +492,15 @@ def _bookmark_from_linkedin_post(raw: dict) -> Bookmark | None:
             except (ValueError, SyntaxError):
                 pass
 
-        # Clean up LinkedIn URLs — remove tracking params
-        # e.g. "?updateEntityUrn=urn:li:..." → clean URL
-        if "?" in url:
-            url = url.split("?")[0]
+        # Canonicalize LinkedIn URL variants before state/frontier checks.
+        url = normalize_url(url)
 
         if not url:
             return None
 
         title = text[:120] if text else f"Post by {author}"
         external_urls = raw.get("external_urls") or []
+        image_urls = raw.get("image_urls") or []
 
         return Bookmark(
             source=Source.LINKEDIN,
@@ -410,6 +508,8 @@ def _bookmark_from_linkedin_post(raw: dict) -> Bookmark | None:
             title=title,
             post_text=text or None,
             external_urls=external_urls if external_urls else None,
+            image_urls=image_urls if image_urls else None,
+            published_at=published_at,
             saved_at=saved_at,
         )
     except Exception:
@@ -430,13 +530,23 @@ class ScraperLinkedIn:
         page: Page,
         state_dir: Path,
         max_posts: int = DEFAULT_MAX_POSTS,
+        skip_processed: bool = True,
+        known_urls: set[str] | None = None,
+        stop_after_known: int = 0,
+        frontier_size: int = 20,
     ) -> None:
         self.page = page
         self.max_posts = max_posts
+        self.skip_processed = skip_processed
         self.processed = ProcessedUrlStore(state_dir)
         self._api_posts: list[dict] = []
         self._api_cursor: str | None = None
         self._seen_urls: set[str] = set()
+        self.boundary = KnownSequenceBoundary(
+            known_urls=known_urls or set(),
+            stop_after_known=stop_after_known,
+            recent_limit=frontier_size,
+        )
 
     async def scrape(self, mode: ScrapeMode) -> list[Bookmark]:
         """Scrape saved posts from LinkedIn.
@@ -449,7 +559,7 @@ class ScraperLinkedIn:
         """
         results: list[Bookmark] = []
         seen_urls: set[str] = set()
-        processed_urls = self.processed.load()
+        processed_urls = self.processed.load() if self.skip_processed else {}
 
         logger.info("Starting LinkedIn scraper: mode=%s", mode.value)
 
@@ -460,7 +570,7 @@ class ScraperLinkedIn:
         await self.page.goto(
             "https://www.linkedin.com/my-items/saved-posts/",
             wait_until="domcontentloaded",
-            timeout=60000,
+            timeout=GOTO_TIMEOUT_SECONDS * 1000,
         )
         await self.page.wait_for_timeout(3000)
         # Diagnostic: capture what LinkedIn is showing
@@ -533,15 +643,26 @@ class ScraperLinkedIn:
             bm = _bookmark_from_linkedin_post(raw)
             if bm is None:
                 logger.warning("Could not convert raw post to bookmark: %s", {k: str(v)[:80] for k, v in raw.items()})
-            elif str(bm.url) in processed_urls:
-                logger.info("Skipping already-processed: %s", str(bm.url)[:100])
-            elif str(bm.url) in seen_urls:
-                logger.info("Skipping duplicate in this run: %s", str(bm.url)[:100])
             else:
-                logger.info("Adding bookmark: %s", str(bm.url)[:100])
-                results.append(bm)
-                seen_urls.add(str(bm.url))
-                if len(results) >= self.max_posts:
+                url = str(bm.url)
+                reached_boundary = self.boundary.observe(url)
+                normalized_url = normalize_url(url)
+                if self.skip_processed and normalized_url in processed_urls:
+                    logger.info("Skipping already-processed: %s", url[:100])
+                elif self.boundary.is_known(url):
+                    logger.info("Skipping known vault/frontier bookmark: %s", url[:100])
+                elif url in seen_urls:
+                    logger.info("Skipping duplicate in this run: %s", url[:100])
+                else:
+                    logger.info("Adding LinkedIn bookmark: %s title=%r", url[:100], bm.title[:120])
+                    results.append(bm)
+                    seen_urls.add(url)
+                if len(results) >= self.max_posts or reached_boundary:
+                    if reached_boundary:
+                        logger.info(
+                            "LinkedIn delta frontier reached after %d consecutive known bookmarks",
+                            self.boundary.consecutive_known,
+                        )
                     break
 
         logger.info("LinkedIn scraper complete: %d bookmarks (from %d raw posts)", len(results), len(self._api_posts))
@@ -652,7 +773,8 @@ class ScraperLinkedIn:
         results: list[Bookmark] = []
         max_scroll_time_ms = DOM_FALLBACK_TIMEOUT_SECONDS * 1000
         elapsed = 0
-        previous_count = 0
+        no_new_scrolls = 0
+        max_no_new_scrolls = 5
 
         logger.info("Starting DOM fallback for LinkedIn saved posts")
 
@@ -660,31 +782,59 @@ class ScraperLinkedIn:
         await self.page.wait_for_timeout(2000)
 
         while elapsed < max_scroll_time_ms:
+            before_count = len(seen_urls)
+
             # Extract posts from current DOM
             dom_posts = await self._extract_posts_from_dom()
 
             for raw in dom_posts:
                 bm = _bookmark_from_linkedin_post(raw)
-                if bm and str(bm.url) not in processed_urls and str(bm.url) not in seen_urls:
-                    results.append(bm)
-                    seen_urls.add(str(bm.url))
-                    if len(results) >= self.max_posts:
+                if bm:
+                    url = str(bm.url)
+                    reached_boundary = self.boundary.observe(url)
+                    normalized_url = normalize_url(url)
+                    if (
+                        normalized_url not in processed_urls
+                        and not self.boundary.is_known(url)
+                        and url not in seen_urls
+                    ):
+                        logger.info("Adding LinkedIn DOM bookmark: %s title=%r", url[:100], bm.title[:120])
+                        results.append(bm)
+                        seen_urls.add(url)
+                    if len(results) >= self.max_posts or reached_boundary:
+                        if reached_boundary:
+                            logger.info(
+                                "LinkedIn DOM delta frontier reached after %d consecutive known bookmarks",
+                                self.boundary.consecutive_known,
+                            )
                         break
 
-            if len(results) >= self.max_posts:
+            if len(results) >= self.max_posts or self.boundary.matched:
                 break
 
-            # Check if we found new posts this iteration
-            current_count = len(dom_posts)
-            if current_count == previous_count and current_count > 0 and elapsed > _human_scroll_ms() * 2:
-                logger.info("DOM fallback: no new posts found, stopping")
-                break
+            new_count = len(seen_urls) - before_count
+            if new_count == 0:
+                no_new_scrolls += 1
+            else:
+                no_new_scrolls = 0
 
-            previous_count = current_count
+            if no_new_scrolls >= max_no_new_scrolls:
+                logger.info(
+                    "DOM fallback: no new posts after %d scrolls, stopping",
+                    max_no_new_scrolls,
+                )
+                break
 
             # Scroll down with randomized amounts and delays
             scroll_wait = _human_scroll_ms()
-            await self.page.evaluate(f"window.scrollBy(0, {_human_scroll_px()})")
+            await self.page.evaluate(
+                f"window.scrollBy(0, Math.max({_human_scroll_px()}, Math.floor(window.innerHeight * 0.85))); "
+                "window.scrollTo(0, document.body.scrollHeight);"
+            )
+            try:
+                await self.page.keyboard.press("End")
+            except Exception:
+                logger.debug("Could not send End key during LinkedIn DOM fallback scroll")
             await self.page.wait_for_timeout(scroll_wait)
             elapsed += scroll_wait
 
@@ -707,18 +857,51 @@ class ScraperLinkedIn:
                     'a[href*="/posts/"]',
                     'a[href*="/activity/"]',
                 ];
-                const cardSelectors = [
-                    'article', 'section', '[data-urn]',
-                    '[class*="update"]', '[class*="feed"]',
-                    '[class*="saved"]', 'li', 'div[class*="card"]',
-                ];
-                const textSelectors = [
-                    '[dir="ltr"]', '[class*="break-words"]',
-                    '[class*="text"]', 'span[class*="attributed"]', 'p',
-                ];
                 const authorSelectors = [
                     '[class*="actor"]', '[class*="author"]', 'a[href*="/in/"]',
                 ];
+
+                function findCard(link) {
+                    let node = link;
+                    for (let i = 0; i < 12 && node && node !== document.body; i++) {
+                        const text = (node.innerText || '').trim();
+                        const updateLinks = node.querySelectorAll
+                            ? node.querySelectorAll(linkSelectors.join(', ')).length
+                            : 0;
+                        if (updateLinks >= 1 && text.length > 80) {
+                            return node;
+                        }
+                        node = node.parentElement;
+                    }
+                    return link;
+                }
+
+                function cleanText(text) {
+                    return (text || '')
+                        .replace(/\\n{3,}/g, '\\n\\n')
+                        .replace(/^Status is (?:online|offline)\\n/gm, '')
+                        .trim();
+                }
+
+                function authorFromCard(card) {
+                    const authorEl = card.querySelector(authorSelectors.join(', '));
+                    if (!authorEl) return 'unknown';
+                    return cleanText(authorEl.innerText)
+                        .replace(/\\nView .*?profile.*$/is, '')
+                        .replace(/\\nView company:.*$/is, '')
+                        .trim() || 'unknown';
+                }
+
+                function relativeTimeNear(el) {
+                    let node = el;
+                    for (let i = 0; i < 10 && node && node !== document.body; i++) {
+                        const text = node.innerText || '';
+                        const match = text.match(/\\b\\d+\\s*(?:s|sec|secs|m|min|mins|h|hr|hrs|d|day|days|w|wk|wks|mo|mos|month|months|y|yr|yrs|year|years)\\b\\s*•/i);
+                        if (match) return match[0].replace('•', '').trim();
+                        node = node.parentElement;
+                    }
+                    return '';
+                }
 
                 // Strategy 1: Find all links that look like post URLs
                 const allLinks = document.querySelectorAll(
@@ -728,24 +911,19 @@ class ScraperLinkedIn:
                     const href = link.href || '';
                     if (!seen.has(href)) {
                         seen.add(href);
-                        const card = link.closest(
-                            cardSelectors.join(', ')
-                        ) || link;
-                        const textEl = card.querySelector(
-                            textSelectors.join(', ')
-                        );
-                        const authorEl = card.querySelector(
-                            authorSelectors.join(', ')
-                        );
-                        const text = textEl
-                            ? textEl.innerText.trim() : '';
-                        const author = authorEl
-                            ? authorEl.innerText.trim() : '';
+                        const card = findCard(link);
+                        const text = cleanText(card.innerText);
+                        const author = authorFromCard(card);
                         if (href || text) {
+                            const imageUrls = Array.from(card.querySelectorAll('img[src]'))
+                                .map(img => img.src)
+                                .filter(src => src.startsWith('http') && !src.includes('profile-displayphoto'));
                             posts.push({
                                 url: href, text: text,
                                 author: author || 'unknown',
                                 created_at: '',
+                                created_at_text: relativeTimeNear(link),
+                                image_urls: imageUrls,
                             });
                         }
                     }
@@ -764,20 +942,17 @@ class ScraperLinkedIn:
                     const url = links.length > 0 ? links[0].href : '';
                     if (url && !seen.has(url)) {
                         seen.add(url);
-                        const textEl = el.querySelector(
-                            textSelectors.join(', ')
-                        );
-                        const authorEl = el.querySelector(
-                            authorSelectors.join(', ')
-                        );
-                        const text = textEl
-                            ? textEl.innerText.trim() : '';
-                        const author = authorEl
-                            ? authorEl.innerText.trim() : '';
+                        const text = cleanText(el.innerText);
+                        const author = authorFromCard(el);
+                        const imageUrls = Array.from(el.querySelectorAll('img[src]'))
+                            .map(img => img.src)
+                            .filter(src => src.startsWith('http') && !src.includes('profile-displayphoto'));
                         posts.push({
                             url: url, text: text,
                             author: author || 'unknown',
                             created_at: '',
+                            created_at_text: relativeTimeNear(el),
+                            image_urls: imageUrls,
                         });
                     }
                 });
@@ -798,20 +973,17 @@ class ScraperLinkedIn:
                         const url = link.href;
                         if (!seen.has(url)) {
                             seen.add(url);
-                            const textEl = card.querySelector(
-                                textSelectors.join(', ')
-                            );
-                            const authorEl = card.querySelector(
-                                authorSelectors.join(', ')
-                            );
-                            const text = textEl
-                                ? textEl.innerText.trim() : '';
-                            const author = authorEl
-                                ? authorEl.innerText.trim() : '';
+                            const text = cleanText(card.innerText);
+                            const author = authorFromCard(card);
+                            const imageUrls = Array.from(card.querySelectorAll('img[src]'))
+                                .map(img => img.src)
+                                .filter(src => src.startsWith('http') && !src.includes('profile-displayphoto'));
                             posts.push({
                                 url: url, text: text,
                                 author: author || 'unknown',
                                 created_at: '',
+                                created_at_text: relativeTimeNear(card),
+                                image_urls: imageUrls,
                             });
                         }
                     }

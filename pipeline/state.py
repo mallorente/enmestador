@@ -10,7 +10,8 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+import re
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse, unquote
 
 from config import LOCK_STALE_HOURS
 from models import DeadLetter, Source
@@ -25,6 +26,10 @@ LOCK_STALE_SECONDS = int(LOCK_STALE_HOURS * 60 * 60)
 
 def normalize_url(url: str) -> str:
     parsed = urlparse(url)
+    linkedin_url = _normalize_linkedin_url(url, parsed)
+    if linkedin_url:
+        return linkedin_url
+
     path = parsed.path.rstrip("/")
     if path == "":
         path = "/"
@@ -39,6 +44,28 @@ def normalize_url(url: str) -> str:
         new_query,
         "",
     ))
+
+
+def _normalize_linkedin_url(url: str, parsed) -> str | None:
+    """Canonicalize LinkedIn post/article URL variants to a stable update URL."""
+    hostname = (parsed.hostname or parsed.netloc).lower()
+    if hostname not in {"linkedin.com", "www.linkedin.com"}:
+        return None
+
+    decoded_url = unquote(url)
+    urn_match = re.search(r"urn:li:(activity|article):(\d+)", decoded_url)
+    if urn_match:
+        return (
+            "https://www.linkedin.com/feed/update/"
+            f"urn:li:{urn_match.group(1)}:{urn_match.group(2)}"
+        )
+
+    decoded_path = unquote(parsed.path)
+    activity_match = re.search(r"(?:activity-|/activity/|/activity:)(\d+)", decoded_path)
+    if activity_match:
+        return f"https://www.linkedin.com/feed/update/urn:li:activity:{activity_match.group(1)}"
+
+    return None
 
 
 def _atomic_write(path: Path, data: str) -> None:
