@@ -22,6 +22,7 @@ from config import (
     LLM_MODEL_FALLBACK_1,
     LLM_MODEL_FALLBACK_2,
     LLM_RATE_LIMIT_SEC,
+    WIKI_FIELDS,
 )
 from models import Bookmark, EnrichedBookmark, Enrichment, ExtractedContent, Source
 
@@ -175,6 +176,13 @@ class LLMProcessor:
             "TAKEAWAY: one sentence",
             "TAGS: tag1, tag2, tag3",
         ])
+        if WIKI_FIELDS:
+            fields_label = ", ".join(WIKI_FIELDS)
+            parts.append(
+                f"FIELD: which life-area this note is most useful for. Strongly"
+                f" prefer EXACTLY one of: [{fields_label}]. Only if it genuinely"
+                f" fits none, propose one concise new field."
+            )
         return "\n".join(parts)
 
     def _parse_response(self, text: str) -> dict:
@@ -184,7 +192,8 @@ class LLMProcessor:
         takeaway_match = re.search(
             r"TAKEAWAY:[ \t]*([^\n]+)", text, re.IGNORECASE
         )
-        tags_match = re.search(r"TAGS:\s*(.+)", text, re.IGNORECASE)
+        tags_match = re.search(r"TAGS:[ \t]*([^\n]+)", text, re.IGNORECASE)
+        field_match = re.search(r"FIELD:[ \t]*([^\n]+)", text, re.IGNORECASE)
 
         summary_bullets = []
         if summary_match:
@@ -204,10 +213,13 @@ class LLMProcessor:
                 if t.strip()
             ]
 
+        field = field_match.group(1).strip() if field_match else None
+
         return {
             "summary_bullets": summary_bullets,
             "takeaway": takeaway,
             "tags": tags,
+            "field": field,
         }
 
     async def enrich(
@@ -240,6 +252,7 @@ class LLMProcessor:
                     tags=parsed["tags"],
                     model_used=model,
                     tokens=len(raw.split()),
+                    field=parsed.get("field"),
                 )
                 return EnrichedBookmark(
                     bookmark=bookmark,
@@ -257,3 +270,19 @@ class LLMProcessor:
         raise EnrichmentError(
             f"All models exhausted. Last error: {last_error}"
         )
+
+    async def complete(self, prompt: str) -> str:
+        """Run an arbitrary prompt through the model fallback chain (raw text out).
+
+        Used by callers that need the LLM transport without bookmark enrichment,
+        e.g. the interest-map clustering step.
+        """
+        last_error: EnrichmentError | None = None
+        for model, client in self._endpoints:
+            await self._rate_limit("complete")
+            try:
+                return await self._try_model(model, client, prompt)
+            except EnrichmentError as exc:
+                last_error = exc
+                continue
+        raise EnrichmentError(f"All models exhausted. Last error: {last_error}")

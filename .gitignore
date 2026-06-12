@@ -10,6 +10,8 @@ obsidian_output_*/
 dedupe_backup/
 
 # Python
+.venv/
+venv/
 __pycache__/
 *.pyc
 *.pyo
