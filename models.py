@@ -66,6 +66,7 @@ class Enrichment(BaseModel):
     tags: list[str]
     model_used: str
     tokens: int
+    field: str | None = None
 
 
 class EnrichedBookmark(BaseModel):

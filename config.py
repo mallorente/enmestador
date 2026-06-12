@@ -1,4 +1,9 @@
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 DEFAULT_STATE_DIR = os.getenv("STATE_DIR", "state")
 DEFAULT_OUTPUT_DIR = os.getenv("OUTPUT_DIR", "volumes/llm_wiki_seed/Bookmarks/bookmarks")
@@ -32,3 +37,19 @@ LLM_FALLBACK_4_API_KEY = os.getenv("LLM_FALLBACK_4_API_KEY", "")
 LLM_FALLBACK_4_MODEL = os.getenv("LLM_FALLBACK_4_MODEL", "")
 
 LOCK_STALE_HOURS = float(os.getenv("LOCK_STALE_HOURS", "4.0"))
+
+# Life-area "fields" used to classify each note for the wiki. Override with a
+# comma-separated WIKI_FIELDS env var to fit your own areas of interest.
+WIKI_FIELDS = [
+    f.strip()
+    for f in os.getenv(
+        "WIKI_FIELDS", "Home Automation,Personal Agents,Legal Tech,Other Tech"
+    ).split(",")
+    if f.strip()
+]
+
+# Where the wiki and the interest-map HTML are written.
+WIKI_OUTPUT_DIR = os.getenv("WIKI_OUTPUT_DIR", str(Path.home() / "enmestador-wiki"))
+INTEREST_MAP_HTML = os.getenv(
+    "INTEREST_MAP_HTML", str(Path.home() / "enmestador" / "interest-map.html")
+)
