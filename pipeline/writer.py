@@ -21,6 +21,7 @@ _FRONTMATTER_KEYS = [
     "title",
     "source",
     "url",
+    "author",
     "published",
     "saved",
     "retrieved",
@@ -80,6 +81,8 @@ def _build_frontmatter(enriched: EnrichedBookmark) -> str:
         "source": bookmark.source.value,
         "url": str(bookmark.url),
     }
+    if bookmark.author:
+        fm["author"] = bookmark.author
     if bookmark.published_at:
         fm["published"] = bookmark.published_at.isoformat()
     if bookmark.saved_at:
@@ -113,6 +116,32 @@ def _build_body(enriched: EnrichedBookmark) -> str:
             lines.append(f"- {bullet}")
         lines.append("")
         lines.append(f"## Takeaway\n\n{enriched.enrichment.takeaway}\n")
+
+    # Referenced GitHub repos: factual metadata + the LLM's evaluation.
+    if content.repo_analyses:
+        lines.append("## Referenced repos\n")
+        for repo in content.repo_analyses:
+            meta = []
+            if repo.stars is not None:
+                meta.append(f"★{repo.stars}")
+            if repo.language:
+                meta.append(repo.language)
+            suffix = f" — {' · '.join(meta)}" if meta else ""
+            lines.append(f"### [{repo.full_name}]({repo.url}){suffix}")
+            if repo.description:
+                lines.append(f"> {repo.description}")
+            if repo.topics:
+                lines.append(f"*topics: {', '.join(repo.topics)}*")
+            lines.append("")
+        evaluation = enriched.enrichment.repo_evaluation if enriched.enrichment else None
+        if evaluation:
+            lines.append(f"**Evaluation:** {evaluation}\n")
+
+    # Author's first comment (often where they drop the repo link)
+    if enriched.bookmark.author_comment:
+        lines.append("## Author comment\n")
+        lines.append(enriched.bookmark.author_comment)
+        lines.append("")
 
     # Original post text (always shown)
     if content.post_text:

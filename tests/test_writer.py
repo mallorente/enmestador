@@ -514,3 +514,47 @@ def test_writer_collision_across_sources(tmp_path: Path) -> None:
     assert path_x != path_li
     assert path_x.parent.name == "x"
     assert path_li.parent.name == "linkedin"
+
+
+def test_body_renders_repos_and_author_comment() -> None:
+    from models import RepoAnalysis
+
+    bookmark = Bookmark(
+        source=Source.LINKEDIN,
+        url="https://linkedin.com/feed/1",
+        title="Cool repo",
+        author="Jane Doe",
+        author_comment="Check the repo: https://github.com/o/r",
+        author_comment_urls=["https://github.com/o/r"],
+    )
+    content = ExtractedContent(
+        url="https://linkedin.com/feed/1",
+        post_text="A post",
+        extraction_method="post_only",
+        repo_analyses=[RepoAnalysis(
+            url="https://github.com/o/r", full_name="o/r",
+            description="a tool", stars=10, language="Python", topics=["ai"],
+        )],
+    )
+    enrichment = Enrichment(
+        summary_bullets=["a", "b", "c"], takeaway="t", tags=["x"],
+        model_used="claude", tokens=1, repo_evaluation="Solid early-stage tool.",
+    )
+    body = _build_body(EnrichedBookmark(bookmark=bookmark, content=content, enrichment=enrichment))
+
+    assert "## Referenced repos" in body
+    assert "[o/r](https://github.com/o/r)" in body
+    assert "★10" in body
+    assert "**Evaluation:** Solid early-stage tool." in body
+    assert "## Author comment" in body
+    assert "Check the repo" in body
+
+
+def test_frontmatter_includes_author() -> None:
+    bookmark = Bookmark(
+        source=Source.LINKEDIN, url="https://linkedin.com/feed/1",
+        title="x", author="Jane Doe",
+    )
+    content = ExtractedContent(url="https://linkedin.com/feed/1", extraction_method="post_only")
+    fm = _build_frontmatter(EnrichedBookmark(bookmark=bookmark, content=content, enrichment=None))
+    assert "author: Jane Doe" in fm

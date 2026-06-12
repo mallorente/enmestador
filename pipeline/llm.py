@@ -165,6 +165,29 @@ class LLMProcessor:
             for url in bookmark.external_urls:
                 parts.append(f"- {url}")
 
+        if bookmark.author_comment:
+            parts.append(
+                "\nAuthor's own first comment (often where they link the repo):"
+                f"\n{bookmark.author_comment}"
+            )
+
+        repos = content.repo_analyses if content and content.repo_analyses else []
+        for repo in repos:
+            parts.append(f"\n--- Referenced GitHub repo: {repo.full_name} ({repo.url})")
+            if repo.description:
+                parts.append(f"Description: {repo.description}")
+            meta = []
+            if repo.stars is not None:
+                meta.append(f"{repo.stars} stars")
+            if repo.language:
+                meta.append(repo.language)
+            if repo.topics:
+                meta.append("topics: " + ", ".join(repo.topics))
+            if meta:
+                parts.append(" | ".join(meta))
+            if repo.readme_excerpt:
+                parts.append(f"README excerpt:\n{repo.readme_excerpt}")
+
         parts.extend([
             "",
             "Respond in this EXACT format:",
@@ -175,6 +198,13 @@ class LLMProcessor:
             "TAKEAWAY: one sentence",
             "TAGS: tag1, tag2, tag3",
         ])
+        if repos:
+            parts.append(
+                "REPO_EVALUATION: a short paragraph evaluating the referenced GitHub"
+                " repo(s) from the README and metadata above — what it does, its"
+                " quality/maturity, who it is for, and your verdict. Be concrete; do"
+                " not invent features."
+            )
         return "\n".join(parts)
 
     def _parse_response(self, text: str) -> dict:
@@ -184,7 +214,10 @@ class LLMProcessor:
         takeaway_match = re.search(
             r"TAKEAWAY:[ \t]*([^\n]+)", text, re.IGNORECASE
         )
-        tags_match = re.search(r"TAGS:\s*(.+)", text, re.IGNORECASE)
+        tags_match = re.search(r"TAGS:[ \t]*([^\n]+)", text, re.IGNORECASE)
+        repo_match = re.search(
+            r"REPO_EVALUATION:\s*(.+)", text, re.IGNORECASE | re.DOTALL
+        )
 
         summary_bullets = []
         if summary_match:
@@ -204,10 +237,13 @@ class LLMProcessor:
                 if t.strip()
             ]
 
+        repo_evaluation = repo_match.group(1).strip() if repo_match else None
+
         return {
             "summary_bullets": summary_bullets,
             "takeaway": takeaway,
             "tags": tags,
+            "repo_evaluation": repo_evaluation,
         }
 
     async def enrich(
@@ -240,6 +276,7 @@ class LLMProcessor:
                     tags=parsed["tags"],
                     model_used=model,
                     tokens=len(raw.split()),
+                    repo_evaluation=parsed.get("repo_evaluation"),
                 )
                 return EnrichedBookmark(
                     bookmark=bookmark,

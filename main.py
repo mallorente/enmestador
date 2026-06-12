@@ -38,7 +38,13 @@ from pipeline.frontier import BookmarkFrontierStore, collect_vault_note_urls
 from pipeline.llm import EnrichmentError, LLMProcessor
 from models import Bookmark, EnrichedBookmark, ExternalArticle, ExtractedContent, PipelineResult, ScrapeMode, Source
 from pipeline.notifier import Notifier
-from extractors.playwright import extract_linkedin_post, extract_with_playwright, extract_x_thread
+from extractors.github import extract_github_repos
+from extractors.playwright import (
+    extract_linkedin_author_comment,
+    extract_linkedin_post,
+    extract_with_playwright,
+    extract_x_thread,
+)
 from scrapers.linkedin import ScraperLinkedIn
 from scrapers.x import ScraperX
 from pipeline.state import CursorsStore, DeadLetterWriter, LockFile, ProcessedUrlStore, normalize_url
@@ -423,6 +429,15 @@ async def _process_bookmark(
                 li_urls = pw_urls
                 bookmark.external_urls = li_urls
 
+            # The author's own first comment is where repo links usually live.
+            comment_text, comment_urls = await extract_linkedin_author_comment(
+                pw_context, str(bookmark.url)
+            )
+            if comment_text:
+                bookmark.author_comment = comment_text
+            if comment_urls:
+                bookmark.author_comment_urls = comment_urls
+
         # Trafilatura fallback if Playwright failed or returned insufficient content
         if (
             extracted is None
@@ -544,6 +559,22 @@ async def _process_bookmark(
                     external_articles=external_articles,
                     image_urls=bookmark.image_urls,
                 )
+
+    # GitHub repos referenced in the post body or the author's first comment:
+    # fetch README + metadata so the note can evaluate the repo, not just link it.
+    repo_url_candidates = _merge_unique(
+        bookmark.external_urls, bookmark.author_comment_urls
+    )
+    if repo_url_candidates:
+        repo_analyses = await extract_github_repos(repo_url_candidates)
+        if repo_analyses:
+            if extracted is None:
+                extracted = ExtractedContent(
+                    url=bookmark.url,
+                    post_text=bookmark.post_text,
+                    extraction_method="post_only",
+                )
+            extracted.repo_analyses = repo_analyses
 
     # Enrich via LLM
     enriched_success = True

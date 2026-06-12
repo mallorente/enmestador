@@ -30,6 +30,10 @@ class Bookmark(BaseModel):
     external_urls: list[str] | None = None
     referenced_tweet_urls: list[str] | None = None
     image_urls: list[str] | None = None
+    author: str | None = None
+    author_urn: str | None = None
+    author_comment: str | None = None
+    author_comment_urls: list[str] | None = None
     published_at: datetime | None = None
     saved_at: datetime | None = None
     retrieved_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -44,6 +48,19 @@ class ExternalArticle(BaseModel):
     extraction_method: str = "trafilatura"
 
 
+class RepoAnalysis(BaseModel):
+    """Factual metadata + README excerpt for a referenced GitHub repository."""
+
+    url: str
+    full_name: str  # "owner/repo"
+    description: str | None = None
+    stars: int | None = None
+    language: str | None = None
+    topics: list[str] | None = None
+    pushed_at: str | None = None
+    readme_excerpt: str | None = None
+
+
 class ExtractedContent(BaseModel):
     """Clean article text extracted via trafilatura."""
 
@@ -54,6 +71,7 @@ class ExtractedContent(BaseModel):
     external_urls: list[str] | None = None
     referenced_tweet_urls: list[str] | None = None
     external_articles: list[ExternalArticle] | None = None
+    repo_analyses: list[RepoAnalysis] | None = None
     image_urls: list[str] | None = None
     extracted_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -66,6 +84,7 @@ class Enrichment(BaseModel):
     tags: list[str]
     model_used: str
     tokens: int
+    repo_evaluation: str | None = None
 
 
 class EnrichedBookmark(BaseModel):
