@@ -14,6 +14,7 @@ import logging
 import re
 from datetime import UTC, datetime
 
+import httpx
 from patchright.async_api import BrowserContext, Page
 
 from config import FETCH_TIMEOUT
@@ -22,6 +23,7 @@ from models import ExtractedContent
 logger = logging.getLogger(__name__)
 
 MAX_CONTENT_LENGTH = 50000
+MAX_COMMENT_LENGTH = 2000
 NAVIGATION_TIMEOUT = FETCH_TIMEOUT * 1000
 
 CONTENT_SELECTORS = [
@@ -135,6 +137,92 @@ async def extract_linkedin_post(
         return content, external_urls
     except Exception:
         logger.exception("Playwright LinkedIn extraction failed for %s", url)
+        return None, []
+    finally:
+        if page and not page.is_closed():
+            await page.close()
+
+
+async def _resolve_short_url(url: str) -> str:
+    """Resolve a LinkedIn lnkd.in redirect to its final destination."""
+    if "lnkd.in" not in url:
+        return url
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
+            resp = await client.get(url)
+            return str(resp.url)
+    except Exception as exc:
+        logger.info("Could not resolve short url %s: %s", url, exc)
+        return url
+
+
+async def extract_linkedin_author_comment(
+    context: BrowserContext, url: str
+) -> tuple[str | None, list[str]]:
+    """Extract the post author's own first comment and the links inside it.
+
+    On LinkedIn the original poster's comment carries an "Author"/"Autor" badge;
+    repo links are frequently dropped there rather than in the post body. Returns
+    (comment_text, resolved_urls). Best-effort: returns (None, []) on any failure.
+    """
+    page: Page | None = None
+    try:
+        page = await context.new_page()
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT)
+        except Exception:
+            await page.wait_for_timeout(4000)
+        await page.wait_for_timeout(4000)
+
+        # Nudge LinkedIn into loading the comment thread.
+        for label in ("button:has-text('coment')", "button:has-text('Comment')"):
+            try:
+                await page.click(label, timeout=2500)
+                break
+            except Exception:
+                continue
+        for _ in range(3):
+            await page.mouse.wheel(0, 1400)
+            await page.wait_for_timeout(1200)
+
+        result = await page.evaluate(
+            r"""() => {
+                const nodes = Array.from(
+                    document.querySelectorAll('article.comments-comment-entity')
+                );
+                for (const n of nodes) {
+                    const badgeEl = n.querySelector('[class*="badge"], .comments-comment-meta__badge');
+                    const badge = badgeEl ? badgeEl.innerText.trim().toLowerCase() : '';
+                    if (!badge.includes('autor') && !badge.includes('author')) continue;
+                    const bodyEl = n.querySelector(
+                        '.comments-comment-item__main-content, .update-components-text, [class*="comment-item__main"]'
+                    );
+                    const txt = (bodyEl ? bodyEl.innerText : n.innerText).trim();
+                    const links = Array.from(n.querySelectorAll('a[href]'))
+                        .map(a => a.href)
+                        .filter(h => !h.includes('linkedin.com/in/')
+                            && !h.includes('/overlay/')
+                            && !h.includes('linkedin.com/feed/'));
+                    return {txt, links};
+                }
+                return null;
+            }"""
+        )
+        if not result or not (result.get("txt") or result.get("links")):
+            return None, []
+
+        text = (result.get("txt") or "").strip()[:MAX_COMMENT_LENGTH] or None
+
+        resolved: list[str] = []
+        seen: set[str] = set()
+        for link in result.get("links", []):
+            final = await _resolve_short_url(link)
+            if final and final not in seen:
+                seen.add(final)
+                resolved.append(final)
+        return text, resolved
+    except Exception:
+        logger.exception("Author-comment extraction failed for %s", url)
         return None, []
     finally:
         if page and not page.is_closed():

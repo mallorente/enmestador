@@ -26,3 +26,7 @@ test_output/
 
 # macOS
 .DS_Store
+
+# Python venv
+.venv/
+venv/
